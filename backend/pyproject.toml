@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs a local PostgreSQL (uses database ds_platform_test)",
+]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning:croniter.*"]

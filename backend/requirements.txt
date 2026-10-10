@@ -1,0 +1,20 @@
+# API
+fastapi>=0.143
+uvicorn[standard]>=0.54
+psycopg[binary]>=3.3
+psycopg-pool>=3.3
+# Data platform
+osmium>=4.3          # pyosmium: OSM PBF parsing
+duckdb>=1.5
+pyarrow>=25
+shapely>=2.2
+numpy>=2.5
+pytz                 # required by DuckDB for TIMESTAMPTZ values
+phonenumbers>=9
+tldextract>=5.4
+jsonschema>=4.26
+croniter>=6.2
+requests>=2.34
+# Tests
+pytest>=9
+httpx>=0.28
