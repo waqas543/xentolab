@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db
 from app.routers import companies, query_runner, stats
-from data_platform.api import routes_app, routes_dashboard, routes_data, routes_pipelines
+from data_platform.api import routes_dashboard, routes_data, routes_pipelines
+from xento_api import db as app_db
+from xento_api import routes as app_routes
 
 
 @asynccontextmanager
@@ -17,6 +19,7 @@ async def lifespan(_app: FastAPI):
     from data_platform import db as platform_db
 
     platform_db.close_pools()
+    app_db.close()
 
 
 app = FastAPI(title="OSM Companies API", lifespan=lifespan)
@@ -34,7 +37,7 @@ app.include_router(query_runner.router)
 app.include_router(routes_pipelines.router)
 app.include_router(routes_data.router)
 app.include_router(routes_dashboard.router)
-app.include_router(routes_app.router)
+app.include_router(app_routes.router)        # mobile app, reads the `app` schema (make app-schema)
 
 
 @app.get("/api/health")

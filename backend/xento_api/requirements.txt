@@ -1,0 +1,5 @@
+# Production API only (the data platform needs ../requirements.txt)
+fastapi>=0.143
+uvicorn[standard]>=0.54
+psycopg[binary]>=3.3
+psycopg-pool>=3.3

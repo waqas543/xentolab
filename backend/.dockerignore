@@ -1,0 +1,4 @@
+# Only the production API goes into the image.
+*
+!xento_api
+xento_api/**/__pycache__

@@ -1,0 +1,45 @@
+# XentoLab production: the mobile app API + its PostGIS database.
+#
+#   cd deploy && cp .env.example .env    # set POSTGRES_PASSWORD
+#   docker compose up -d --build
+#   ./restore.sh ~/app-YYYY-MM-DD.dump   # load data (make app-dump on the Mac)
+#
+# The database has no published port: only the api container can reach it.
+name: xentolab
+
+services:
+  db:
+    build: ./db
+    image: xentolab-db:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: karobar
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${API_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d karobar"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: xento_api/Dockerfile
+    image: xentolab-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: host=db dbname=karobar user=postgres password=${POSTGRES_PASSWORD}
+      API_DOCS: ${API_DOCS:-0}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8001}:8000"
+
+volumes:
+  pgdata:

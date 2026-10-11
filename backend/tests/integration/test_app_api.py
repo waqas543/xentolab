@@ -1,12 +1,19 @@
-"""Mobile app API: serves Gold data and never reveals where it came from."""
+"""Mobile app API: the `app` schema built from Gold (scripts/app_schema.sql), served by xento_api.
+
+Nothing in a response may reveal where the data came from.
+"""
 
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from data_platform.api import routes_app
+from xento_api import db as app_db
+from xento_api import routes
+
+APP_SCHEMA_SQL = Path(__file__).resolve().parents[3] / "scripts" / "app_schema.sql"
 
 pytestmark = pytest.mark.integration
 
@@ -19,9 +26,11 @@ SOURCE_VALUES = ("osm", "overture", "geonames", "wikidata", "commoncrawl", "comm
 
 @pytest.fixture(scope="module")
 def client(clean_platform):
+    import psycopg
+
     from data_platform import db
 
-    routes_app._cache.clear()
+    routes._cache.clear()
     with db.serving() as conn:
         conn.execute("""
             INSERT INTO gold.businesses (gold_id, name, category_group, category, country_code, admin1, city, locality,
@@ -38,7 +47,10 @@ def client(clean_platform):
                '{osm}', 1, 1, false, false, false, false, 0, 1, now(), '{}', 0.5, NULL, '{}', '{}'),
               ('gb_3', 'Gamma Garage', 'Automotive', 'unspecified_shop', 'PK', 'Sindh', 'Karachi', 'Clifton', NULL,
                24.86, 67.01, NULL, NULL, '+922100000', NULL, NULL, NULL,
-               '{overture}', 1, 1, false, true, false, false, 25, 1, now(), '{}', 0.7, NULL, '{}', '{}')
+               '{overture}', 1, 1, false, true, false, false, 25, 1, now(), '{}', 0.7, NULL, '{}', '{}'),
+              ('gb_4', 'Delta Village', 'Professional Services', 'professional_service', 'PK', 'Sindh', 'Karachi',
+               'Saddar', NULL, 24.87, 67.02, 'https://www.wikidata.org/wiki/Q99', 'wikidata.org', NULL, NULL, NULL,
+               NULL, '{wikidata}', 1, 1, true, false, false, false, 25, 1, now(), '{}', 0.6, 'Q99', '{}', '{}')
         """)
         conn.execute("""
             INSERT INTO gold.organizations (organization_id, country_code, name, brand_wikidata, domain, category_group,
@@ -60,11 +72,15 @@ def client(clean_platform):
             INSERT INTO gold.domains (domain, country_code, tld, business_count, organization_count, sources,
                 gold_version_id, organization_id, domain_type, crawl_pages, homepage_url, homepage_status, crawl)
             VALUES ('alpha.pk', 'PK', 'pk', 1, 1, '{commoncrawl,osm}', 1, 'org_1', 'known_business', 120,
-                    'https://alpha.pk/robots.txt', 200, 'CC-MAIN-2026-10')
+                    'https://alpha.pk/robots.txt', 200, 'CC-MAIN-2026-10'),
+                   ('wikidata.org', 'PK', 'org', 1, 0, '{osm}', 1, NULL, NULL, 5, NULL, NULL, NULL)
         """)
+    with psycopg.connect(f"dbname={clean_platform}") as conn:      # one transaction, like `make app-schema`
+        conn.execute(APP_SCHEMA_SQL.read_text())
     app = FastAPI()
-    app.include_router(routes_app.router)
-    return TestClient(app)
+    app.include_router(routes.router)
+    yield TestClient(app)
+    app_db.close()
 
 
 def leaks(value, path="$"):
@@ -95,6 +111,19 @@ def test_every_endpoint_hides_sources(client):
         response = client.get(url)
         assert response.status_code == 200, (url, response.text)
         assert leaks(response.json()) == [], (url, json.dumps(response.json())[:500])
+
+
+def test_app_schema_has_no_provenance(client):
+    from data_platform import db
+
+    with db.serving() as conn:
+        columns = {r["column_name"] for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'app'").fetchall()}
+        delta = conn.execute("SELECT website, domain, has_website FROM app.places WHERE id = 'gb_4'").fetchone()
+        sites = [r["domain"] for r in conn.execute("SELECT domain FROM app.websites").fetchall()]
+    assert not columns & SOURCE_KEYS
+    assert delta == {"website": None, "domain": None, "has_website": False}     # provider links are dropped
+    assert sites == ["alpha.pk"]
 
 
 def test_business_detail_is_friendly(client):
