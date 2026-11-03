@@ -47,7 +47,7 @@ Limit = Annotated[int, Query(ge=1, le=50)]
 # ---------------------------------------------------------------- places
 
 PLACE_COLUMNS = """p.id, p.name, p.category, p.category_key, p.group_name, p.city, p.area, p.address, p.phone,
-    p.website, p.email, p.lat, p.lng, p.brand, p.company_id"""
+    p.website, p.email, p.lat, p.lng, p.brand, p.company_id, p.rating, p.review_count"""
 POINT = "ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)"
 
 
@@ -56,7 +56,8 @@ def place(row: dict) -> dict:
         "id": row["id"], "name": row["name"], "category": row["category"], "category_key": row["category_key"],
         "group": row["group_name"], "city": row["city"], "area": row["area"], "address": row["address"],
         "phone": row["phone"], "website": row["website"], "email": row["email"], "lat": row["lat"], "lng": row["lng"],
-        "brand": row["brand"], "organization_id": row["company_id"],
+        "brand": row["brand"], "organization_id": row["company_id"], "rating": row["rating"],
+        "review_count": row["review_count"],
     }
     if row.get("distance_km") is not None:
         item["distance_km"] = round(row["distance_km"], 2)
@@ -294,19 +295,29 @@ def get_city(city_id: str):
 # ---------------------------------------------------------------- websites
 
 WEBSITE_SELECT = """
-    SELECT w.domain, w.url, w.type, w.type_label, w.places, w.group_name, w.company_id,
+    SELECT w.domain, w.url, w.type, w.type_label, w.places, w.group_name, w.company_id, w.name, w.summary,
+           w.industry, w.city, w.founded, w.employees, w.market_cap, w.revenue, w.financials, w.socials, w.emails,
+           w.phones, w.has_profile,
            (SELECT o.name FROM app.companies o WHERE o.id = w.company_id ORDER BY o.locations DESC LIMIT 1) AS company_name
     FROM app.websites w
 """
 
 
-def website(row: dict) -> dict:
-    return {
+def website(row: dict, detail: bool = False) -> dict:
+    """List rows carry the headline; the detail adds contacts, social profiles and financials."""
+    item = {
         "domain": row["domain"], "url": row["url"], "type": row["type"], "type_label": row["type_label"],
         "businesses": row["places"], "group": row["group_name"],
         "organization": {"id": row["company_id"], "name": row["company_name"]}
         if row["company_id"] and row["company_name"] else None,
+        "name": row["name"], "summary": row["summary"], "industry": row["industry"], "city": row["city"],
+        "has_profile": row["has_profile"],
     }
+    if detail:
+        item |= {"founded": row["founded"], "employees": row["employees"], "market_cap": row["market_cap"],
+                 "revenue": row["revenue"], "financials": row["financials"], "socials": row["socials"],
+                 "emails": row["emails"], "phones": row["phones"]}
+    return item
 
 
 @router.get("/websites")
@@ -315,13 +326,17 @@ def list_websites(
     type: Literal["business", "education", "government", "nonprofit", "general", "other"] | None = None,
     country: Country = None,
     sort: Literal["popular", "name"] = "popular",
+    profiled: bool | None = None,
     offset: Offset = 0,
     limit: Limit = 20,
 ):
     where, params = ["true"], {"offset": offset, "limit": limit}
     if q and q.strip():
         params["like"] = like(q)
-        where.append("w.domain ILIKE %(like)s")
+        where.append("(w.domain ILIKE %(like)s OR w.name ILIKE %(like)s)")
+    if profiled is not None:
+        params["profiled"] = profiled
+        where.append("w.has_profile = %(profiled)s")
     if type:
         params["type"] = type
         where.append("w.type = %(type)s")
@@ -341,7 +356,7 @@ def get_website(domain: str):
     row = one(f"{WEBSITE_SELECT} WHERE w.domain = %(domain)s ORDER BY w.places DESC LIMIT 1", {"domain": domain.lower()})
     if row is None:
         raise HTTPException(404, "Website not found")
-    return website(row)
+    return website(row, detail=True)
 
 
 # ---------------------------------------------------------------- home, categories, search

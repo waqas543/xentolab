@@ -58,3 +58,51 @@ and signal sources write `silver.web_domains` or `silver.org_mentions`. All of t
 Once a second source writes `silver.places` for the same country, entity resolution compares records across sources
 automatically. Gold `sources`, `source_count`, overlap analytics and the Sources dashboard then light up without
 further work.
+
+## A source of domain facts
+
+Use this when a source knows something about **the company behind a website**: market cap from a stock exchange,
+employees from a directory, a summary from a profile site. It writes `silver.domain_facts`, and Gold merges it into
+`gold.domain_profiles`, which the app shows on the website screen. Nothing outside the adapter changes.
+`sources/websites/` is the working example. The skill `.claude/skills/add-domain-fact-source` walks through the same
+steps as a checklist.
+
+1. **Raw first.** Download or export the provider's data unchanged as the artifact (`store_artifact`), and keep it in
+   a Bronze dataset with its own columns plus `lineage_sql(...)`. Bronze is what lets Silver be rebuilt when the mapping
+   changes.
+
+2. **Key by domain.** Every fact needs the registrable domain. Use `normalize.normalize_website(url)[1]`. If the
+   provider has company names but no websites, resolve them to domains through `gold.organizations` or
+   `gold.domains`, and record the method as `record`.
+
+3. **Map onto the contract** in `transform_silver`, into partition `{"source": "<source_id>", "country": …}`:
+
+   ```sql
+   SELECT domain, '{country}' AS country_code,
+          'market_cap' AS field, format_market_cap(cap) AS value,        -- a field from DOMAIN_FACT_FIELDS
+          'psx' AS source, 'record' AS method,                          -- a method from DOMAIN_FACT_METHODS
+          cap_raw AS evidence, listing_url AS evidence_url, 'record' AS evidence_type,
+          0.9 AS confidence, as_of::TIMESTAMPTZ AS observed_at, symbol AS source_record_id,
+          artifact_id, {bronze_id} AS bronze_version_id, {run_id} AS pipeline_run_id,
+          '{transformation_version}' AS transformation_version, now() AS ingested_at
+   FROM bronze
+   ```
+
+   - Normalize values the way the contract expects: E.164 phones (`normalize_phone`), lower-case emails, canonical
+     profile URLs (`normalize.social_profile`), a plain four-digit year for `founded_year`.
+   - Count facts you cannot map instead of writing them. The SILVER_QUALITY suite fails a version with unknown fields
+     or methods.
+   - For a genuinely new kind of fact, add the field to `DOMAIN_FACT_FIELDS`, a precedence entry in
+     `gold/domain_profiles.py: PRECEDENCE`, a column in `PROFILE_SCHEMA`, a serving migration, and `publish.py`.
+
+4. **Precedence.** Pick the method honestly: the method decides where your values rank against other sources. If
+   several sources state a fact the same way, `gold/builder.py: DOMAIN_FACT_SOURCE_PRIORITY` breaks the tie, so add
+   your source there.
+
+5. **Register and test.** Add the adapter to `BUILTIN_ADAPTERS`, then run `python -m data_platform sync`. Add an
+   integration test that runs the pipeline on a fixture and asserts the merged `gold.domain_profiles` row, as
+   `test_gold_domain_profiles_merge_every_source` does.
+
+Sources that already write `silver.organizations` (Wikidata, OpenCorporates) need nothing extra. Their records that
+state a website become `record` facts automatically: name, description, industry, HQ city, inception, employees,
+contacts and social links.

@@ -1,5 +1,8 @@
 """Quality suites for the platform-owned (cross-source) datasets."""
 
+import re
+
+from ..silver_contract import DOMAIN_FACT_FIELDS, DOMAIN_FACT_METHODS
 from .checks import (
     CoordinateCheck,
     DomainCheck,
@@ -7,6 +10,7 @@ from .checks import (
     NotNullCheck,
     PhoneCheck,
     RecordCountCheck,
+    RegexCheck,
     SchemaCheck,
     UniqueCheck,
 )
@@ -16,6 +20,11 @@ SILVER_PLACES_CONTRACT = (
     ("category_group", "VARCHAR"), ("country_code", "VARCHAR"), ("latitude", "DOUBLE"), ("longitude", "DOUBLE"),
     ("normalized_domain", "VARCHAR"), ("normalized_phone", "VARCHAR"), ("artifact_id", "BIGINT"),
     ("transformation_version", "VARCHAR"),
+)
+
+SILVER_DOMAIN_FACTS_CONTRACT = (
+    ("domain", "VARCHAR"), ("country_code", "VARCHAR"), ("field", "VARCHAR"), ("value", "VARCHAR"),
+    ("source", "VARCHAR"), ("method", "VARCHAR"), ("evidence_type", "VARCHAR"), ("transformation_version", "VARCHAR"),
 )
 
 
@@ -56,6 +65,14 @@ def silver_checks(dataset_id: str):
     if dataset_id == "silver.org_mentions":
         return [UniqueCheck(name="unique_name_key", columns=("name_key",)),
                 NotNullCheck(name="name_present", column="name")]
+    if dataset_id == "silver.domain_facts":
+        # The shared vocabulary is what lets Gold merge any source: an unknown field or method is a contract breach.
+        return [SchemaCheck(name="silver_contract", required=SILVER_DOMAIN_FACTS_CONTRACT),
+                RegexCheck(name="known_field", column="field", pattern="|".join(re.escape(f) for f in sorted(DOMAIN_FACT_FIELDS))),
+                RegexCheck(name="known_method", column="method", pattern="|".join(DOMAIN_FACT_METHODS)),
+                NotNullCheck(name="value_present", column="value"),
+                DomainCheck(name="valid_domains", column="domain", severity="warn", threshold_pct=1),
+                RecordCountCheck(name="row_count_stable", min_rows=1, max_change_pct=50, severity="warn")]
     if dataset_id == "silver.postal_codes":
         return [NotNullCheck(name="postal_code_present", column="postal_code")]
     return []
@@ -76,6 +93,9 @@ def gold_checks(dataset_id: str):
     if dataset_id == "gold.domains":
         return [UniqueCheck(name="unique_domain", columns=("domain",)),
                 NotNullCheck(name="tld_present", column="tld")]
+    if dataset_id == "gold.domain_profiles":
+        return [UniqueCheck(name="unique_domain", columns=("domain",)),
+                NotNullCheck(name="has_sources", column="field_sources")]
     if dataset_id == "gold.organizations":
         return [UniqueCheck(name="unique_organization_id", columns=("organization_id",)),
                 NotNullCheck(name="name_present", column="name")]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import phonenumbers
 import tldextract
@@ -145,3 +145,76 @@ def registered_domain(host: str | None) -> tuple[str | None, str | None]:
 def surt_host_prefix(domain: str) -> str:
     """SURT form of a domain as used by web-archive indexes: example.com.pk -> pk,com,example"""
     return ",".join(reversed(domain.lower().strip(".").split(".")))
+
+
+# Social profiles: canonical profile URLs; share buttons, posts and videos are not profiles.
+
+_HANDLE = re.compile(r"^@?[A-Za-z0-9._-]{2,100}$")
+
+_FB_DENY = {"sharer", "sharer.php", "share", "share.php", "dialog", "plugins", "tr", "login", "login.php", "events",
+            "hashtag", "watch", "story.php", "photo", "photo.php", "groups", "home.php", "help", "policies", "privacy"}
+_IG_DENY = {"p", "reel", "reels", "explore", "stories", "accounts", "tv", "share", "direct"}
+_X_DENY = {"intent", "share", "home", "hashtag", "search", "i", "login", "signup", "privacy", "tos", "explore"}
+_PIN_DENY = {"pin", "search", "ideas", "today"}
+
+
+def _host(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower()
+    for prefix in ("www.", "m.", "mobile.", "web.", "business.", "pk.", "en."):
+        host = host.removeprefix(prefix)
+    return host
+
+
+def social_profile(url: str) -> tuple[str, str] | None:
+    """(network, canonical profile URL) for links to a profile/page; None for share buttons, posts, etc."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return None
+    host = _host(url)
+    segs = [s for s in parts.path.split("/") if s]
+    first = segs[0].lower() if segs else ""
+
+    def handle(i: int = 0) -> str | None:
+        return segs[i] if len(segs) > i and _HANDLE.match(segs[i]) else None
+
+    if host in ("facebook.com", "fb.com", "fb.me"):
+        if first == "profile.php" and (pid := parse_qs(parts.query).get("id")):
+            return "facebook", f"https://www.facebook.com/profile.php?id={pid[0]}"
+        if first in ("pages", "people") and len(segs) >= 3:
+            return "facebook", "https://www.facebook.com/" + "/".join(segs[:3])
+        if first and first not in _FB_DENY and handle():
+            return "facebook", f"https://www.facebook.com/{segs[0]}"
+    elif host == "instagram.com":
+        if first and first not in _IG_DENY and handle():
+            return "instagram", f"https://www.instagram.com/{segs[0]}"
+    elif host in ("twitter.com", "x.com"):
+        if first and first not in _X_DENY and handle():
+            return "x_twitter", f"https://x.com/{segs[0]}"
+    elif host == "linkedin.com":
+        if first in ("company", "in", "school", "showcase") and handle(1):
+            return "linkedin", f"https://www.linkedin.com/{first}/{segs[1]}"
+    elif host in ("youtube.com", "youtu.be"):
+        if first.startswith("@") and handle():
+            return "youtube", f"https://www.youtube.com/{segs[0]}"
+        if first in ("channel", "c", "user") and handle(1):
+            return "youtube", f"https://www.youtube.com/{first}/{segs[1]}"
+    elif host == "tiktok.com":
+        if first.startswith("@") and handle():
+            return "tiktok", f"https://www.tiktok.com/{segs[0]}"
+    elif host == "pinterest.com" or host.startswith("pinterest."):
+        if first and first not in _PIN_DENY and handle():
+            return "pinterest", f"https://www.pinterest.com/{segs[0]}"
+    elif host == "wa.me":
+        if first.isdigit():
+            return "whatsapp", f"https://wa.me/{first}"
+    elif host in ("api.whatsapp.com", "whatsapp.com", "chat.whatsapp.com"):
+        if first == "send" and (phone := parse_qs(parts.query).get("phone")):
+            digits = re.sub(r"\D", "", phone[0])
+            return ("whatsapp", f"https://wa.me/{digits}") if digits else None
+        if first == "channel" and handle(1):
+            return "whatsapp", f"https://whatsapp.com/channel/{segs[1]}"
+    elif host in ("threads.net", "threads.com"):
+        if first.startswith("@") and handle():
+            return "threads", f"https://www.threads.net/{segs[0]}"
+    return None

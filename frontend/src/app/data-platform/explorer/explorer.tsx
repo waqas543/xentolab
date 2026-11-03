@@ -2,7 +2,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ArrowDown, ArrowUp, Bookmark, ChevronLeft, ChevronRight, Columns3, Download, Lock, Search, X } from "lucide-react";
+import {
+  ArrowDown, ArrowUp, Bookmark, Briefcase, CalendarDays, ChevronLeft, ChevronRight, Columns3, Download, ExternalLink, Lock,
+  Mail, MapPin, Phone, Search, Sparkles, Users, X,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useRef, useState } from "react";
@@ -31,13 +34,14 @@ const LAYERS = [
 
 interface SavedView { id: number; name: string; dataset_id: string; query: { filters?: FilterGroup; search?: string; columns?: string[]; sort?: { field: string; direction: string }[] } }
 
-function cell(value: unknown) {
+/** Table cells shorten long text to keep columns readable; the record drawer passes `full` to show everything. */
+function cell(value: unknown, full = false) {
   if (value === null || value === undefined) return <span className="text-muted">–</span>;
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) return value.join(", ");
   if (typeof value === "object") return <span className="font-mono text-xs">{JSON.stringify(value)}</span>;
   const text = String(value);
-  return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+  return !full && text.length > 120 ? `${text.slice(0, 120)}…` : text;
 }
 
 export function ExplorerPage() {
@@ -124,9 +128,8 @@ export function ExplorerPage() {
   const pages = result.data ? Math.max(1, Math.ceil(result.data.total / pageSize)) : 1;
   const visibleColumns = result.data?.columns ?? [];
   const fieldMap = Object.fromEntries((fields.data ?? []).map((f) => [f.field, f]));
-  const primaryIndex = visibleColumns.indexOf(
-    { "gold.businesses": "gold_id", "silver.places": "silver_id", "gold.organizations": "organization_id", "gold.domains": "domain", "er.entity_matches": "id" }[datasetId] ?? "id",
-  );
+  // Rows open in the record drawer when the dataset declares a key column (registry.py `primary_key`).
+  const primaryIndex = dataset?.primary_key ? visibleColumns.indexOf(dataset.primary_key) : -1;
 
   const views = useQuery({ queryKey: ["dp-views", datasetId], queryFn: () => dp<SavedView[]>(`/views?dataset_id=${datasetId}`) });
   const saveView = useMutation({
@@ -326,11 +329,111 @@ function OrganizationSection({ detail }: { detail: OrganizationDetail }) {
   );
 }
 
+// ---------------------------------------------------------------- company profile (gold.domain_profiles)
+
+type DomainProfile = Record<string, unknown> & { field_sources?: Record<string, string> };
+
+const METHOD_LABELS: Record<string, string> = {
+  site: "custom parser", jsonld: "site markup", record: "record", meta: "meta tags", link: "site links",
+  text: "page text", llm: "AI-extracted", businesses: "its businesses",
+};
+const SOCIAL_LABELS: [string, string][] = [
+  ["facebook", "Facebook"], ["instagram", "Instagram"], ["x_twitter", "X"], ["linkedin", "LinkedIn"], ["youtube", "YouTube"],
+  ["tiktok", "TikTok"], ["pinterest", "Pinterest"], ["whatsapp", "WhatsApp"], ["threads", "Threads"],
+];
+
+/** "website:llm" -> "website · AI-extracted" */
+function provenance(value: string | undefined): string | null {
+  if (!value) return null;
+  const [source, method] = value.split(":");
+  return method ? `${source} · ${METHOD_LABELS[method] ?? method}` : source;
+}
+
+function ProfileFact({ icon: Icon, label, value, from }: { icon: typeof MapPin; label: string; value: unknown; from?: string }) {
+  if (value === null || value === undefined || value === "") return null;
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-line px-3 py-2">
+      <Icon size={15} className="mt-0.5 shrink-0 text-muted" />
+      <div className="min-w-0">
+        <div className="text-xs text-muted">{label}</div>
+        <div className="break-words text-sm font-medium">{String(value)}</div>
+        {from && <div className="text-[11px] text-muted">{provenance(from)}</div>}
+      </div>
+    </div>
+  );
+}
+
+function ProfileSection({ profile }: { profile: DomainProfile }) {
+  const from = profile.field_sources ?? {};
+  const text = (key: string) => (typeof profile[key] === "string" && profile[key] ? String(profile[key]) : null);
+  const list = (key: string) => (Array.isArray(profile[key]) ? (profile[key] as string[]) : []);
+  const socials = SOCIAL_LABELS.filter(([key]) => text(key));
+  const summarySource = from.summary?.split(":")[1];
+  return (
+    <section className="mb-6">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h3 className="text-xl font-semibold">{text("company_name") ?? String(profile.domain)}</h3>
+        <a href={`https://${String(profile.domain)}`} target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-1 text-sm text-accent-ink hover:underline">
+          {String(profile.domain)} <ExternalLink size={13} />
+        </a>
+      </div>
+
+      {text("summary") && (
+        <div className="mb-4 rounded-xl border border-accent/30 bg-accent-soft/40 px-4 py-3">
+          <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-accent-ink">
+            {summarySource === "llm" && <Sparkles size={13} />} Summary
+            {from.summary && <span className="font-normal normal-case tracking-normal text-muted">· {provenance(from.summary)}</span>}
+          </div>
+          <p className="text-[15px] leading-relaxed text-ink">{text("summary")}</p>
+        </div>
+      )}
+
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <ProfileFact icon={Briefcase} label="Industry" value={profile.industry} from={from.industry} />
+        <ProfileFact icon={Briefcase} label="Category" value={profile.category_group} from={from.category_group} />
+        <ProfileFact icon={MapPin} label="City" value={profile.city} from={from.city} />
+        <ProfileFact icon={CalendarDays} label="Founded" value={profile.founded_year} from={from.founded_year} />
+        <ProfileFact icon={Users} label="Employees" value={profile.employees} from={from.employees} />
+        <ProfileFact icon={Briefcase} label="Revenue" value={profile.revenue} from={from.revenue} />
+        <ProfileFact icon={Briefcase} label="Market cap" value={profile.market_cap} from={from.market_cap} />
+        <ProfileFact icon={Briefcase} label="Financials" value={profile.financial_info} from={from.financial_info} />
+      </div>
+
+      {(socials.length > 0 || list("emails").length > 0 || list("phones").length > 0) && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {socials.map(([key, label]) => (
+            <a key={key} href={text(key)!} target="_blank" rel="noreferrer" title={provenance(from[key]) ?? undefined}
+              className="inline-flex items-center gap-1 rounded-full border border-line-strong px-2.5 py-1 text-xs hover:bg-surface-hover">
+              {label} <ExternalLink size={11} className="text-muted" />
+            </a>
+          ))}
+          {list("emails").map((e) => (
+            <a key={e} href={`mailto:${e}`} className="inline-flex items-center gap-1 rounded-full border border-line-strong px-2.5 py-1 text-xs hover:bg-surface-hover">
+              <Mail size={11} className="text-muted" /> {e}
+            </a>
+          ))}
+          {list("phones").map((p) => (
+            <a key={p} href={`tel:${p}`} className="inline-flex items-center gap-1 rounded-full border border-line-strong px-2.5 py-1 text-xs hover:bg-surface-hover">
+              <Phone size={11} className="text-muted" /> {p}
+            </a>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
+        Sources: {list("sources").map((s) => <Badge key={s}>{s}</Badge>)}
+        <span>· {formatNumber(Number(profile.fact_count ?? 0))} facts from {formatNumber(Number(profile.pages_crawled ?? 0))} pages</span>
+      </div>
+    </section>
+  );
+}
+
 function RecordDrawer({ datasetId, recordKey, onClose }: { datasetId: string; recordKey: string; onClose: () => void }) {
   const client = useQueryClient();
   const { data, error, isLoading } = useQuery({
     queryKey: ["dp-record", datasetId, recordKey],
-    queryFn: () => dp<{ record: Record<string, unknown>; provenance?: Provenance; organization?: OrganizationDetail }>(
+    queryFn: () => dp<{ record: Record<string, unknown>; provenance?: Provenance; organization?: OrganizationDetail; profile?: DomainProfile | null }>(
       `/datasets/${datasetId}/records/${encodeURIComponent(recordKey)}`),
   });
   const decide = useMutation({
@@ -345,13 +448,14 @@ function RecordDrawer({ datasetId, recordKey, onClose }: { datasetId: string; re
         <div className="flex items-center justify-between border-b border-line px-5 py-3">
           <div>
             <div className="text-xs text-muted">{datasetId}</div>
-            <h2 className="text-lg font-semibold">{String(data?.record?.name ?? recordKey)}</h2>
+            <h2 className="text-lg font-semibold">{String(data?.record?.name ?? data?.record?.company_name ?? recordKey)}</h2>
           </div>
           <button onClick={onClose} aria-label="Close" className="rounded-md p-1 hover:bg-surface-hover"><X size={18} /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4">
           {isLoading && <Loading />}
           {error && <ErrorBox error={error} />}
+          {data?.profile && <ProfileSection profile={data.profile} />}
           {data?.organization && <OrganizationSection detail={data.organization} />}
           {data?.provenance && (
             <section className="mb-5">
@@ -412,7 +516,7 @@ function RecordDrawer({ datasetId, recordKey, onClose }: { datasetId: string; re
                 {Object.entries(data.record).map(([k, v]) => (
                   <div key={k} className="contents">
                     <dt className="font-mono text-xs text-muted">{k}</dt>
-                    <dd className="min-w-0 break-words" dir="auto">{typeof v === "object" && v !== null ? <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(v, null, 2)}</pre> : cell(v)}</dd>
+                    <dd className="min-w-0 break-words" dir="auto">{typeof v === "object" && v !== null ? <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(v, null, 2)}</pre> : cell(v, true)}</dd>
                   </div>
                 ))}
               </dl>

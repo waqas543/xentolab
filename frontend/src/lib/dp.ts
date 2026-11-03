@@ -258,6 +258,8 @@ export interface DatasetInfo {
   description: string;
   engine: string;
   accessible: boolean;
+  /** Column that identifies a record (opens the record drawer); null when the dataset has no record view. */
+  primary_key: string | null;
   row_count: number | null;
   size_bytes: number | null;
   partitions: number | null;

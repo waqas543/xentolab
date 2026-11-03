@@ -1,6 +1,7 @@
 # XentoLab (mobile)
 
-App ID `pk.xento.karobar` (Android `applicationId`, iOS bundle identifier). Internal names (JS module
+App ID: Android `applicationId` `pk.xento.xentolab` (the Play Console listing), iOS bundle identifier
+`pk.xento.karobar`. The Kotlin package/`namespace` stays `pk.xento.karobar`. Internal names (JS module
 `Karobar`, Xcode project, storage keys) are unchanged and never shown to users.
 
 React Native CLI app (no Expo) that lets anyone browse the Gold data: places, companies & brands, cities and

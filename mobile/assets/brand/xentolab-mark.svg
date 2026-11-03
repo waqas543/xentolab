@@ -1,0 +1,6 @@
+<!-- XentoLab mark only (transparent background), for light/dark surfaces that already have a brand color. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="262 190 500 680" width="500" height="680">
+  <path d="M512 210 A230 230 0 0 1 742 440 C742 600 600 720 512 850 C424 720 282 600 282 440 A230 230 0 0 1 512 210 Z" fill="#FFFFFF"/>
+  <polygon points="392,318 482,318 632,566 542,566" fill="#0B7A5C"/>
+  <polygon points="542,318 632,318 482,566 392,566" fill="#F5A623"/>
+</svg>

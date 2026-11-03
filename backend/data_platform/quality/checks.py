@@ -173,6 +173,8 @@ class RecordCountCheck(QualityCheck):
                 # A source was added or removed: a big change is expected, not an anomaly.
                 note = (f"not compared: inputs changed from {context.get('previous_sources')} "
                         f"to {context.get('sources')}")
+            elif context.get("accumulating") and change >= 0:
+                note = "growth not limited: the source accumulates records across runs"
             elif abs(change) > self.max_change_pct:
                 problems.append(f"row count changed {change:+.1f}% vs previous version ({previous})")
         return CheckOutcome(1, 1 if problems else 0, {"rows": rows, "previous_rows": previous, "change_pct": change,

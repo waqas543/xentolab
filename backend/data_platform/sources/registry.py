@@ -15,11 +15,13 @@ from .base import DataSourceAdapter, PipelineSpec
 BUILTIN_ADAPTERS = [
     "data_platform.sources.osm.adapter:OSMAdapter",
     "data_platform.sources.overture.adapter:OvertureAdapter",
+    "data_platform.sources.googlemaps.adapter:GoogleMapsAdapter",
     "data_platform.sources.geonames.adapter:GeoNamesAdapter",
     "data_platform.sources.wikidata.adapter:WikidataAdapter",
     "data_platform.sources.commoncrawl.adapter:CommonCrawlAdapter",
     "data_platform.sources.gdelt.adapter:GDELTAdapter",
     "data_platform.sources.opencorporates.adapter:OpenCorporatesAdapter",
+    "data_platform.sources.websites.adapter:WebsitesAdapter",
 ]
 
 

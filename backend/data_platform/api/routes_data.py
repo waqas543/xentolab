@@ -48,6 +48,7 @@ def list_datasets(principal: Viewer):
         result.append(jsonable({
             "id": spec.id, "layer": spec.layer, "label": spec.label, "description": spec.description,
             "engine": spec.engine, "accessible": principal.can(spec.permission), "permission": spec.permission,
+            "primary_key": spec.primary_key,
             "row_count": entry.get("row_count"), "size_bytes": entry.get("size_bytes"),
             "partitions": entry.get("partitions"), "last_committed_at": entry.get("last_committed_at"),
             "partition_columns": entry.get("partition_columns"),
@@ -122,7 +123,19 @@ def get_record(dataset_id: str, key: str, principal: Annotated[Principal, Depend
             result["organization"] = organization_provenance(record["organization_id"], record.get("country_code"))
     elif spec.id == "gold.organizations":
         result["organization"] = organization_provenance(key, record.get("country_code"))
+    elif spec.id in ("gold.domain_profiles", "gold.domains"):
+        result["profile"] = domain_profile(key, record.get("country_code"))
     return result
+
+
+def domain_profile(domain: str, country: str | None) -> dict | None:
+    """The full company profile of a domain (every column, including per-field provenance), if it has one."""
+    with db.serving() as conn:
+        row = conn.execute("""
+            SELECT * FROM gold.domain_profiles WHERE domain = %s AND (%s::text IS NULL OR country_code = %s)
+            ORDER BY fact_count DESC LIMIT 1
+        """, [domain, country, country]).fetchone()
+    return jsonable(row) if row else None
 
 
 def business_provenance(gold_id: str) -> dict:

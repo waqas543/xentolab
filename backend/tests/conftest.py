@@ -53,7 +53,7 @@ def database(platform_env):
 
     with psycopg.connect(f"dbname={TEST_DB}", autocommit=True) as conn:
         conn.execute("DROP SCHEMA IF EXISTS dp CASCADE; DROP SCHEMA IF EXISTS gold CASCADE; "
-                     "DROP SCHEMA IF EXISTS er CASCADE; DROP TABLE IF EXISTS public.dp_schema_migrations")
+                     "DROP SCHEMA IF EXISTS er CASCADE; DROP SCHEMA IF EXISTS web CASCADE; DROP TABLE IF EXISTS public.dp_schema_migrations")
     from data_platform.migrate import migrate_all
 
     migrate_all()

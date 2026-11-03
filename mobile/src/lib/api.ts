@@ -116,6 +116,25 @@ export type Website = {
   businesses: number;
   group: string | null;
   organization: { id: string; name: string } | null;
+  /** The company behind the site, read from the site itself and other sources. */
+  name: string | null;
+  summary: string | null;
+  industry: string | null;
+  city: string | null;
+  has_profile: boolean;
+};
+
+export type SocialNetwork = 'facebook' | 'instagram' | 'x' | 'linkedin' | 'youtube' | 'tiktok' | 'pinterest' | 'whatsapp' | 'threads';
+
+export type WebsiteDetail = Website & {
+  founded: number | null;
+  employees: string | null;
+  market_cap: string | null;
+  revenue: string | null;
+  financials: string | null;
+  socials: Partial<Record<SocialNetwork, string>>;
+  emails: string[];
+  phones: string[];
 };
 
 export type Category = { key: string; label: string; group?: string | null; count: number };

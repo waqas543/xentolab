@@ -9,6 +9,8 @@ cluster membership is unchanged.
 Non-location sources enrich rather than create businesses: organization records
 (Wikidata, registries) form gold.organizations (see organizations.py), crawled web
 domains extend gold.domains, news mentions add signals, and the gazetteer gives gold.cities.
+Domain facts from any source (company websites, ...) plus organization records merge into
+gold.domain_profiles (see domain_profiles.py).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from ..lake.writer import DatasetVersionWriter, copy_query_into
 from ..normalize import name_key
 from ..resolution.service import er_fingerprint, er_input_ids, named_places_view
 from ..silver_contract import (
+    DOMAIN_FACTS_SCHEMA,
     GEO_PLACES_SCHEMA,
     ORG_MENTIONS_SCHEMA,
     ORGANIZATIONS_SCHEMA,
@@ -32,25 +35,31 @@ from ..silver_contract import (
     geography_versions,
 )
 from ..sources.base import StageResult
-from . import organizations
+from . import domain_profiles, organizations
 from .organizations import UnionFind
 from .version import GOLD_VERSION
 
 # Higher wins in survivorship. New sources slot in here (e.g. a government registry above OSM).
 # OSM ranks above Overture: its names and positions are community-curated, while Overture's places
 # come largely from social-media pages. Attributes a higher-ranked member lacks are still filled from others.
-SOURCE_PRIORITY = {"secp": 100, "opencorporates": 90, "wikidata": 80, "osm": 60, "overture": 50, "geonames": 40}
+# Google Maps listings are business-maintained and recent, so they rank above Overture, but OSM keeps the
+# name and position when both describe the same place.
+SOURCE_PRIORITY = {"secp": 100, "opencorporates": 90, "wikidata": 80, "osm": 60, "googlemaps": 55, "overture": 50,
+                   "geonames": 40}
 
 # Clusters whose every member has a provider confidence below this are not promoted to Gold
 # (they stay in Silver). Sources without per-record confidence (OSM) count as fully confident.
 MIN_GOLD_CONFIDENCE = 0.3
 
 GOLD_DATASETS = ("gold.businesses", "gold.business_sources", "gold.organizations", "gold.organization_sources",
-                 "gold.domains", "gold.cities")
+                 "gold.domains", "gold.cities", "gold.domain_profiles")
 # Silver inputs besides silver.places: (dataset, empty schema used when a country has none yet).
 ENRICHMENT_INPUTS = {"silver.organizations": ("orgrec", ORGANIZATIONS_SCHEMA),
                      "silver.web_domains": ("web_domains", WEB_DOMAINS_SCHEMA),
-                     "silver.org_mentions": ("mentions", ORG_MENTIONS_SCHEMA)}
+                     "silver.org_mentions": ("mentions", ORG_MENTIONS_SCHEMA),
+                     "silver.domain_facts": ("domain_facts", DOMAIN_FACTS_SCHEMA)}
+# Tie-breaks between sources that state a domain fact the same way (same method); see domain_profiles.py.
+DOMAIN_FACT_SOURCE_PRIORITY = {**SOURCE_PRIORITY, "website": 70}
 
 
 def gold_id_for(anchor: str) -> str:
@@ -139,7 +148,19 @@ def build_gold(ctx: StageContext) -> StageResult:
 
         con.execute(f"""
             CREATE TEMP TABLE members AS
-            WITH scored AS (
+            WITH rated AS (
+                -- Star ratings travel in the attributes of the sources that have them (Google Maps): 1-5 stars
+                -- and the number of reviews behind them.
+                SELECT * EXCLUDE (stars, reviews), CASE WHEN stars BETWEEN 1 AND 5 THEN stars END AS rating,
+                       CASE WHEN stars BETWEEN 1 AND 5 AND reviews >= 0 THEN reviews END AS review_count
+                FROM (SELECT *,
+                             TRY_CAST(CASE WHEN json_valid(attributes) THEN attributes->>'$.rating' END AS DOUBLE)
+                                 AS stars,
+                             TRY_CAST(CASE WHEN json_valid(attributes) THEN attributes->>'$.reviews' END AS INTEGER)
+                                 AS reviews
+                      FROM places)
+            ),
+            scored AS (
                 SELECT p.*, coalesce(c.anchor, p.silver_id) AS anchor,
                        coalesce(c.link_confidence, 1.0) AS link_confidence,
                        'gb_' || substr(sha256(coalesce(c.anchor, p.silver_id)), 1, 16) AS gold_id,
@@ -147,7 +168,7 @@ def build_gold(ctx: StageContext) -> StageResult:
                          + (normalized_domain IS NOT NULL AND NOT coalesce(domain_is_platform, false))::INT * 3
                          + (normalized_phone IS NOT NULL)::INT * 2 + (email IS NOT NULL)::INT
                          + (address IS NOT NULL)::INT AS rank_score
-                FROM places p LEFT JOIN cluster_map c USING (silver_id)
+                FROM rated p LEFT JOIN cluster_map c USING (silver_id)
             )
             SELECT *, row_number() OVER (PARTITION BY gold_id ORDER BY rank_score DESC, silver_id) AS member_rank
             FROM scored
@@ -177,6 +198,10 @@ def build_gold(ctx: StageContext) -> StageResult:
                     arg_max(source, rank_score) FILTER (WHERE normalized_phone IS NOT NULL) AS phone_source,
                     arg_max(source, rank_score) FILTER (WHERE email IS NOT NULL) AS email_source,
                     arg_max(source, rank_score) FILTER (WHERE address IS NOT NULL) AS address_source,
+                    -- The rating backed by the most reviews, kept together with its review count and source.
+                    arg_max({{'rating': rating, 'reviews': review_count, 'source': source}},
+                            coalesce(review_count, 0)::BIGINT * 10000 + rank_score) FILTER (WHERE rating IS NOT NULL)
+                        AS rated,
                     max(coalesce(source_confidence, 1.0)) AS confidence,
                     list(DISTINCT source ORDER BY source) AS sources,
                     count(*) AS member_count,
@@ -195,6 +220,7 @@ def build_gold(ctx: StageContext) -> StageResult:
                    '{country}' AS country_code, p.admin1, p.admin2, p.city, p.locality, m.postal_code, m.address,
                    p.latitude, p.longitude, coalesce(m.website_own, m.website_any) AS website, m.domain, m.tld,
                    m.phone, m.email, m.brand_name, m.brand_wikidata,
+                   m.rated.rating AS rating, m.rated.reviews AS review_count,
                    CAST(NULL AS VARCHAR) AS organization_id,
                    m.sources, len(m.sources)::SMALLINT AS source_count, m.member_count::INTEGER AS member_count,
                    coalesce(m.website_own, m.website_any) IS NOT NULL AS has_website,
@@ -206,7 +232,8 @@ def build_gold(ctx: StageContext) -> StageResult:
                    -- Which source supplied each attribute (field-level provenance).
                    json_object('name', p.source, 'location', p.source, 'category', p.source,
                                'website', coalesce(m.website_source, CASE WHEN m.website_any IS NOT NULL THEN p.source END),
-                               'phone', m.phone_source, 'email', m.email_source, 'address', m.address_source)::VARCHAR
+                               'phone', m.phone_source, 'email', m.email_source, 'address', m.address_source,
+                               'rating', m.rated.source)::VARCHAR
                        AS field_sources,
                    CASE WHEN list_contains(m.sources, 'osm') AND len(m.sources) = 1 THEN NULL ELSE m.confidence END
                        AS source_confidence,
@@ -248,9 +275,13 @@ def build_gold(ctx: StageContext) -> StageResult:
                    m.transformation_version, m.source_url
             FROM organization_members m WHERE m.organization_id IN (SELECT organization_id FROM organizations)
         """)
-        write("gold.domains", domains_sql(country))
+        con.execute(f"CREATE TEMP TABLE gold_domains AS {domains_sql(country)}")
+        write("gold.domains", "SELECT * FROM gold_domains")
         con.execute(geo_places_view(geo_places))
         write("gold.cities", cities_sql(country))
+        ctx.progress(0, None, "records", "merging domain profiles", force=True)
+        con.register("domain_profiles_out", domain_profiles.build_table(con, country, DOMAIN_FACT_SOURCE_PRIORITY))
+        write("gold.domain_profiles", "SELECT * FROM domain_profiles_out")
     finally:
         con.close()
 
@@ -262,6 +293,7 @@ def build_gold(ctx: StageContext) -> StageResult:
                  "excluded_low_confidence": int(excluded_low_confidence),
                  "organizations": written["gold.organizations"]["row_count"],
                  "domains": written["gold.domains"]["row_count"], "cities": written["gold.cities"]["row_count"],
+                 "domain_profiles": written["gold.domain_profiles"]["row_count"],
                  **org_stats, "er_fingerprint": fingerprint},
     )
 

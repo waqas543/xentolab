@@ -17,6 +17,7 @@ cancellation, lineage and data quality.
 | Common Crawl | web-domain discovery for the ccTLD, crawl statistics | – |
 | GDELT | organizations in the news (incremental) | – |
 | OpenCorporates | company-registry records via the official API | your own token in `DP_SECRET_OPENCORPORATES_API_TOKEN` |
+| Company websites | company profile per domain: summary, industry, city, founded year, socials, contacts ([scraping engine](docs/data-platform/web-enrichment.md) collects, `websites.profiles` ingests into Gold) | optional proxies file; needs Redis + Ollama |
 
 ```bash
 make setup     # once: Python + Node deps, migrations, register sources
@@ -36,7 +37,9 @@ make help      # all commands
 service's logs, and stops everything if any service exits. Options: `API_PORT=8001 WEB_PORT=3001 WORKERS=2 make up`.
 
 Documentation is in [docs/data-platform/](docs/data-platform/architecture.md): architecture, pipeline lifecycle,
-storage, source adapters, medallion layers, entity resolution, data quality, frontend, operations, and adding a source.
+storage, source adapters, medallion layers, entity resolution, data quality, frontend, operations, adding a source, and
+website enrichment. Task checklists for recurring work are project skills in [.claude/skills/](.claude/skills/):
+`add-domain-fact-source`, `add-site-plugin` and `run-website-enrichment`.
 
 ---
 

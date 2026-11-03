@@ -36,21 +36,22 @@ def client(clean_platform):
             INSERT INTO gold.businesses (gold_id, name, category_group, category, country_code, admin1, city, locality,
                 address, latitude, longitude, website, domain, phone, brand_name, brand_wikidata, organization_id,
                 sources, source_count, member_count, has_website, has_phone, has_email, has_address, completeness,
-                gold_version_id, built_at, field_sources, source_confidence, wikidata_id, enriched_by, conflicts)
+                gold_version_id, built_at, field_sources, source_confidence, wikidata_id, enriched_by, conflicts,
+                rating, review_count)
             VALUES
               ('gb_1', 'Alpha Pharmacy', 'Health', 'pharmacy', 'PK', 'Punjab', 'Lahore', 'Gulberg', '1 Main Blvd',
                31.52, 74.35, 'alpha.pk', 'alpha.pk', '+924200000', 'Alpha', 'Q12345', 'org_1',
                '{osm,overture}', 2, 2, true, true, false, true, 75, 1, now(), '{"phone": "overture"}', 0.9, 'Q12345',
-               '{wikidata}', '{phone}'),
+               '{wikidata}', '{phone}', 4.26, 310),
               ('gb_2', 'Beta Bakery', 'Food & Drink', 'bakery', 'PK', 'Punjab', 'Lahore', 'Lahore', NULL,
                31.521, 74.351, NULL, NULL, NULL, NULL, NULL, NULL,
-               '{osm}', 1, 1, false, false, false, false, 0, 1, now(), '{}', 0.5, NULL, '{}', '{}'),
+               '{osm}', 1, 1, false, false, false, false, 0, 1, now(), '{}', 0.5, NULL, '{}', '{}', NULL, NULL),
               ('gb_3', 'Gamma Garage', 'Automotive', 'unspecified_shop', 'PK', 'Sindh', 'Karachi', 'Clifton', NULL,
                24.86, 67.01, NULL, NULL, '+922100000', NULL, NULL, NULL,
-               '{overture}', 1, 1, false, true, false, false, 25, 1, now(), '{}', 0.7, NULL, '{}', '{}'),
+               '{overture}', 1, 1, false, true, false, false, 25, 1, now(), '{}', 0.7, NULL, '{}', '{}', NULL, NULL),
               ('gb_4', 'Delta Village', 'Professional Services', 'professional_service', 'PK', 'Sindh', 'Karachi',
                'Saddar', NULL, 24.87, 67.02, 'https://www.wikidata.org/wiki/Q99', 'wikidata.org', NULL, NULL, NULL,
-               NULL, '{wikidata}', 1, 1, true, false, false, false, 25, 1, now(), '{}', 0.6, 'Q99', '{}', '{}')
+               NULL, '{wikidata}', 1, 1, true, false, false, false, 25, 1, now(), '{}', 0.6, 'Q99', '{}', '{}', NULL, NULL)
         """)
         conn.execute("""
             INSERT INTO gold.organizations (organization_id, country_code, name, brand_wikidata, domain, category_group,
@@ -74,6 +75,16 @@ def client(clean_platform):
             VALUES ('alpha.pk', 'PK', 'pk', 1, 1, '{commoncrawl,osm}', 1, 'org_1', 'known_business', 120,
                     'https://alpha.pk/robots.txt', 200, 'CC-MAIN-2026-10'),
                    ('wikidata.org', 'PK', 'org', 1, 0, '{osm}', 1, NULL, NULL, 5, NULL, NULL, NULL)
+        """)
+        conn.execute("""
+            INSERT INTO gold.domain_profiles (domain, country_code, organization_id, company_name, summary, industry,
+                category_group, city, founded_year, employees, facebook, linkedin, emails, phones, sources,
+                pages_crawled, fact_count, field_sources, observed_at, gold_version_id)
+            VALUES ('alpha.pk', 'PK', 'org_1', 'Alpha Pharma', 'Alpha runs pharmacies across Punjab.',
+                    'retail pharmacy', 'Health', 'Lahore', 1999, '120', 'https://www.facebook.com/alphapk',
+                    'https://www.linkedin.com/company/alpha', '{info@alpha.pk}', '{+924200000}',
+                    '{website,wikidata}', 3, 25, '{"summary": "website:llm", "founded_year": "wikidata:record"}',
+                    now(), 1)
         """)
     with psycopg.connect(f"dbname={clean_platform}") as conn:      # one transaction, like `make app-schema`
         conn.execute(APP_SCHEMA_SQL.read_text())
@@ -130,6 +141,8 @@ def test_business_detail_is_friendly(client):
     detail = client.get("/api/app/businesses/gb_1").json()
     assert detail["category"] == "Pharmacy" and detail["website"] == "https://alpha.pk"
     assert detail["organization"]["name"] == "Alpha" and detail["city_id"]
+    assert (detail["rating"], detail["review_count"]) == (4.3, 310)
+    assert (detail["nearby"][0]["rating"], detail["nearby"][0]["review_count"]) == (None, None)
     assert [n["id"] for n in detail["nearby"]][0] == "gb_2" and detail["nearby"][0]["distance_km"] < 1
     assert client.get("/api/app/businesses/gb_3").json()["category"] == "Shop"
     assert client.get("/api/app/businesses/nope").status_code == 404
@@ -153,6 +166,17 @@ def test_organization_and_website(client):
     site = client.get("/api/app/websites/alpha.pk").json()
     assert site["url"] == "https://alpha.pk/" and site["type_label"] == "Business"
     assert client.get("/api/app/websites?type=business").json()["total"] == 1
+    # The company profile from gold.domain_profiles, without its provenance.
+    assert (site["name"], site["industry"], site["city"], site["founded"]) == ("Alpha Pharma", "Retail pharmacy",
+                                                                                "Lahore", 1999)
+    assert site["summary"].startswith("Alpha runs") and site["has_profile"]
+    assert site["socials"] == {"facebook": "https://www.facebook.com/alphapk",
+                               "linkedin": "https://www.linkedin.com/company/alpha"}
+    assert site["emails"] == ["info@alpha.pk"] and site["phones"] == ["+924200000"]
+    assert [w["domain"] for w in client.get("/api/app/websites?profiled=true").json()["items"]] == ["alpha.pk"]
+    assert client.get("/api/app/websites?q=alpha%20pharma").json()["total"] == 1       # matches the company name
+    listed = client.get("/api/app/websites?profiled=true").json()["items"][0]
+    assert "emails" not in listed and listed["summary"]
 
 
 def test_search_groups_results(client):

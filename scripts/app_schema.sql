@@ -102,7 +102,9 @@ SELECT b.gold_id                                      AS id,
        b.has_phone,
        b.has_website AND pg_temp.url(b.website) IS NOT NULL AS has_website,
        b.has_email,
-       b.completeness::int                            AS completeness
+       b.completeness::int                            AS completeness,
+       round(b.rating::numeric, 1)::float8            AS rating,
+       b.review_count                                 AS review_count
 FROM gold.businesses b
 LEFT JOIN city_ids ci ON ci.country_code = b.country_code AND ci.name = b.city;
 
@@ -156,12 +158,30 @@ SELECT d.domain,
        t.type,
        t.type_label,
        d.business_count                               AS places,
-       d.top_category_group                           AS group_name,
+       coalesce(p.category_group, d.top_category_group) AS group_name,
        d.organization_id                              AS company_id,
+       -- The company profile read from the site and other sources (gold.domain_profiles), without provenance.
+       p.company_name                                 AS name,
+       p.summary,
+       upper(left(p.industry, 1)) || substr(p.industry, 2) AS industry,
+       p.city,
+       p.founded_year                                 AS founded,
+       p.employees,
+       p.market_cap,
+       p.revenue,
+       p.financial_info                               AS financials,
+       coalesce(jsonb_strip_nulls(jsonb_build_object(
+           'facebook', p.facebook, 'instagram', p.instagram, 'x', p.x_twitter, 'linkedin', p.linkedin,
+           'youtube', p.youtube, 'tiktok', p.tiktok, 'pinterest', p.pinterest, 'whatsapp', p.whatsapp,
+           'threads', p.threads)), '{}')              AS socials,
+       coalesce(p.emails, '{}')                       AS emails,
+       coalesce(p.phones, '{}')                       AS phones,
+       p.domain IS NOT NULL                           AS has_profile,
        -- Popularity ranks by linked places, then web footprint; the footprint itself is not exported.
        row_number() OVER (PARTITION BY d.country_code
                           ORDER BY d.business_count DESC, d.crawl_pages DESC NULLS LAST, d.domain)::int AS popularity
 FROM gold.domains d
+LEFT JOIN gold.domain_profiles p ON p.domain = d.domain AND p.country_code = d.country_code
 CROSS JOIN LATERAL (
     SELECT CASE WHEN d.domain_type IN ('commercial', 'known_business', 'business') THEN 'business'
                 WHEN d.domain_type = 'education' THEN 'education'
@@ -181,6 +201,8 @@ ALTER TABLE app_build.websites ADD PRIMARY KEY (domain, country_code);
 CREATE INDEX ON app_build.websites (country_code, type, popularity);
 CREATE INDEX ON app_build.websites (popularity);
 CREATE INDEX ON app_build.websites USING gin (domain gin_trgm_ops);
+CREATE INDEX ON app_build.websites USING gin (name gin_trgm_ops) WHERE name IS NOT NULL;
+CREATE INDEX ON app_build.websites (country_code, has_profile, popularity);
 
 -- ---------------------------------------------------------------- version
 
@@ -193,7 +215,8 @@ SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24MI"Z"') AS version,
            'places', (SELECT count(*) FROM app_build.places),
            'companies', (SELECT count(*) FROM app_build.companies),
            'cities', (SELECT count(*) FROM app_build.cities),
-           'websites', (SELECT count(*) FROM app_build.websites))     AS row_counts;
+           'websites', (SELECT count(*) FROM app_build.websites),
+           'website_profiles', (SELECT count(*) FROM app_build.websites WHERE has_profile)) AS row_counts;
 
 -- ---------------------------------------------------------------- guard
 

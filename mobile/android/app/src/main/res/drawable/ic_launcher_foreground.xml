@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground: the XentoLab pin + X, scaled from the 1024 master into the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.09" android:scaleY="0.09" android:translateX="7.92" android:translateY="6.3">
+        <path android:fillColor="#FFFFFF"
+            android:pathData="M512,210 A230,230 0 0,1 742,440 C742,600 600,720 512,850 C424,720 282,600 282,440 A230,230 0 0,1 512,210 Z" />
+        <path android:fillColor="#0B7A5C" android:pathData="M392,318 L482,318 L632,566 L542,566 Z" />
+        <path android:fillColor="#F5A623" android:pathData="M542,318 L632,318 L482,566 L392,566 Z" />
+    </group>
+</vector>

@@ -1,8 +1,10 @@
 /**
- * Address of the XentoLab API.
+ * Address of the XentoLab API (production server, deploy/compose.yaml).
  *
- * In development the app talks to the API on your computer through `localhost`: `npm run android` runs
- * `adb reverse tcp:8000 tcp:8000`, which forwards the port for emulators and USB-connected phones alike
- * (the iOS simulator shares the Mac's network). For a release build, point this at the deployed API.
+ * To work against the API on your computer instead, use 'http://localhost:8000': `npm run android` runs
+ * `adb reverse tcp:8000 tcp:8000`, which forwards that port to emulators and USB-connected phones.
+ *
+ * Plain http works in debug builds only; release builds need an https address (e.g. https://api.xento.pk).
  */
-export const API_URL = 'http://localhost:8000';
+// export const API_URL = 'http://localhost:8000';
+export const API_URL = 'https://xentolab.xento.pk';

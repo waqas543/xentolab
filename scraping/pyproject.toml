@@ -1,0 +1,47 @@
+[project]
+name = "xento-scraping"
+version = "0.1.0"
+description = "Modular scraping engine: fetch, parse, enrich and write normalized JSONL."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "tenacity>=9.0",
+    "rich>=13.9",
+    "orjson>=3.10",
+    "selectolax>=0.3.27",
+    "typer>=0.15",
+    "pyyaml>=6.0",
+    "phonenumbers>=8.13",
+    "tldextract>=5.1",
+    "truststore>=0.10",
+]
+
+[project.optional-dependencies]
+js = ["playwright>=1.49"]
+dev = ["pytest>=8.3", "ruff>=0.8"]
+
+[project.scripts]
+scrape = "app.cli:app"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*", "config*"]
+namespaces = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF012"]

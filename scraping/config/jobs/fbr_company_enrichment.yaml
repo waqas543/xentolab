@@ -1,0 +1,120 @@
+job_name: fbr_company_enrichment
+description: Search DuckDuckGo (Google available, disabled) for every FBR company, detect its website and extract contacts + metadata.
+source: fbr
+
+# ---- input
+input_file: input/fbr_raw_data.jsonl
+company_name_field: company_name           # a field name or a list of aliases
+fallback_company_name_field: business_name
+field_map:                                  # output field -> input aliases (first non-empty wins)
+  ntn: [ntn, NTN, ntn_no]
+  registration_no: [registration_no, registration_number, reg_no, incorporation_no]
+  province: [province, PROVINCE]
+  city: [city, CITY, district]
+  address: [address, ADDRESS, business_address]
+name_normalization:
+  strip_suffixes: true                      # "(Pvt) Ltd", "Private Limited", "LLP"... (original name is kept)
+  extra_suffixes: []
+
+# ---- search
+# Engines are tried in order. mode: fallback = the first engine that answers wins (a blocked engine cools down
+# and is skipped); mode: all = every engine, results merged. Unset fetch settings (loader, render_js,
+# rate_limit, retry) fall back to the job's. When every engine is blocked, searches wait out the cooldown.
+search:
+  query_template: "{name} {city} Pakistan"  # fields: name, full_name, city, province, ntn, registration_no
+  mode: fallback
+  engines:
+    - name: duckduckgo
+      url_template: "https://html.duckduckgo.com/html/?q={query}&kl={region}"
+      region: pk-en
+      max_pages: 2
+      loader: load_page                     # LOAD_PAGE_URL (http://localhost:8080/load-page), json_return=false
+      render_js: false
+      rate_limit:                         # Google throttles bursts: one search every 4 s
+        requests_per_second: 1
+        max_concurrency: 1                   # the html.duckduckgo.com page needs no JavaScript
+      retry:
+        max_attempts: 5
+        backoff_seconds: 2
+        max_backoff_seconds: 5
+      cooldown_seconds: 10               # after a captcha, pause Google searches 5 min (doubles, max 40 min)
+      resolve_links: true
+
+    # Google (organic results + AI Overview -> fbr_company_search_summaries) is disabled. To use it, move this
+    # block into engines: above (first = primary, second = fallback).
+    # - name: google
+    #   region: us                          # gl=; hl= comes from language
+    #   language: en
+    #   max_pages: 1
+    #   loader: scrape_api                  # SCRAPE_API_URL / SCRAPE_API_KEY in .env
+    #   loader_options:
+    #     wait_until: networkidle           # none | domcontentloaded | load | networkidle
+    #     block_resources: [image, media, font]
+    #   rate_limit:                         # Google throttles bursts: one search every 4 s
+    #     requests_per_second: 0.25
+    #     max_concurrency: 1
+    #   retry:
+    #     max_attempts: 2
+    #     backoff_seconds: 30
+    #     max_backoff_seconds: 120
+    #   cooldown_seconds: 300               # after a captcha, pause Google searches 5 min (doubles, max 40 min)
+    #   resolve_links: true                 # /goto?url=... -> real URL (one cheap redirect request each)
+max_results_per_company: 20
+
+# ---- website of the likely domain (fetched with the job's loader and render_js below)
+website:
+  enabled: true
+  max_pages: 5                              # homepage + about/products/team/contact pages
+  max_depth: 1
+  include_patterns: [about, contact, company, profile, who-we-are, reach-us, product, service, team, management]
+
+# ---- public LinkedIn company page (main page only: the rest is behind the login wall)
+# The link comes from the company's own website, else from a search result whose name matches the company.
+# Output: output/data/linkedin/fbr_company_linkedin_companies_NNNN.jsonl. Its text also goes to the summary.
+linkedin:
+  enabled: true
+  loader: load_page
+  render_js: false
+  rate_limit:                               # LinkedIn throttles: one request every 2 s
+    requests_per_second: 0.5
+    max_concurrency: 1
+  retry:                                    # the login wall comes and goes for the same page: retry it
+    max_attempts: 4
+    backoff_seconds: 5
+    max_backoff_seconds: 60
+  max_posts: 5                              # recent posts kept from the page
+
+# ---- company profile + summary from the website (and LinkedIn) text, by a local model on Ollama (OLLAMA_URL in .env)
+summary:
+  enabled: true                             # runs for every company with a likely domain
+  model: qwen3:8b
+  text_budget: 12000                        # characters of page text + search snippets sent to the model
+  num_ctx: 8192
+  max_concurrency: 1                        # one request at a time on a laptop GPU/CPU
+
+# ---- fetching
+loader: load_page                           # load_page | scrape_api | http | playwright (website pages)
+render_js: false                            # website pages without a browser
+timeout_seconds: 90
+rate_limit:
+  requests_per_second: 1
+  max_concurrency: 3
+retry:
+  max_attempts: 3
+  backoff_seconds: 2
+
+# ---- processing + output
+parsers:
+  - search_result_parser
+  - contact_extractor
+  - metadata_extractor
+writers:
+  - jsonl_writer
+output_dir: output/data
+output_prefix: fbr_company                  # -> fbr_company_search_results_0001.jsonl, ...
+max_records_per_jsonl_file: 1000
+state_dir: output/state
+extraction:
+  min_likely_domain_score: 45
+  extra_generic_domains: {}
+  extra_cities: {}

@@ -53,10 +53,17 @@ def check_context(version: dict) -> dict:
     previous = previous_version(version)
     if previous is None:
         return {"previous_row_count": None}
+    from ..sources.registry import adapters
+
     current_sources, previous_sources = input_sources(version), input_sources(previous)
+    source = (version.get("partition") or {}).get("source")
+    accumulating = {a.source_id for a in adapters().values() if a.bronze_accumulates}
     return {"previous_row_count": previous["row_count"],
             "composition_changed": current_sources != previous_sources,
-            "sources": current_sources, "previous_sources": previous_sources}
+            "sources": current_sources, "previous_sources": previous_sources,
+            # A source whose records add up across runs (e.g. Google Maps files that keep growing) may grow by
+            # any amount; only shrinking is suspicious.
+            "accumulating": source in accumulating}
 
 
 def run_checks(*, checks: list[QualityCheck], version: dict, run_id: int, stage_run_id: int, stage: str,

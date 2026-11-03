@@ -352,9 +352,85 @@ def test_overview_lists_every_source_and_its_contribution(runs):
     app.include_router(routes_dashboard.router)
     body = TestClient(app).get("/api/data-platform/dashboard/overview").json()
     rows = {c["source"]: c for c in body["contributions"]}
-    assert set(rows) == {"osm", "overture", "geonames", "wikidata", "commoncrawl", "gdelt", "opencorporates"}
+    assert set(rows) == {"osm", "overture", "googlemaps", "geonames", "wikidata", "commoncrawl", "gdelt",
+                         "opencorporates", "websites"}
     assert rows["osm"]["businesses_found"] > 0 and rows["osm"]["businesses_enriched"] == 0
     assert rows["wikidata"]["businesses_found"] == 0 and rows["wikidata"]["businesses_enriched"] >= 3
     assert rows["wikidata"]["silver"]["silver.organizations"] == 4
     assert rows["commoncrawl"]["domains"] == 6 and rows["gdelt"]["businesses_enriched"] >= 1
     assert rows["opencorporates"]["missing_credentials"] == ["DP_SECRET_OPENCORPORATES_API_TOKEN"]
+
+
+# ---------------------------------------------------------------- company websites (scraping engine -> Gold)
+
+WEBSITE_FACTS = [
+    # domain, page url, page kind, field, value, method (the engine's `source`), evidence
+    ("systems-ltd.com", "https://www.systems-ltd.com/", "home", "company_name", "Systems Limited | IT Services", "jsonld", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/", "home", "address_locality", "Gulberg III, Lahore", "jsonld", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/", "home", "social.facebook", "https://www.facebook.com/SystemsLtd", "link", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/about", "about", "social.facebook", "https://www.facebook.com/SystemsLtd", "link", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/", "home", "social.x_twitter", "https://x.com/someone_else", "link", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/contact", "contact", "email", "Info@Systems-Ltd.com", "link", None),
+    ("systems-ltd.com", "https://www.systems-ltd.com/about", "about", "favorite_color", "blue", "text", None),
+    ("systems-ltd.com", None, None, "summary", "Systems builds software for banks and telecoms.", "llm", None),
+    ("systems-ltd.com", None, None, "founded_year", "1980", "llm", "since 1980"),
+    ("systems-ltd.com", None, None, "employees", "6,500", "llm", "6,500 people"),
+    ("newshop.com.pk", "https://newshop.com.pk/", "home", "company_name", "New Shop", "meta", None),
+    ("newshop.com.pk", None, None, "summary", "An online shop for home goods.", "llm", None),
+    ("newshop.com.pk", None, None, "category_group", "Retail", "llm", None),
+]
+
+
+@pytest.fixture(scope="module")
+def websites(runs):
+    """What the scraping engine would have collected, then the websites.profiles pipeline over it."""
+    with db.serving() as conn:
+        campaign = conn.execute("INSERT INTO web.crawl_campaigns (country_code, status) VALUES ('PK', 'completed') "
+                                "RETURNING id").fetchone()["id"]
+        for domain in sorted({f[0] for f in WEBSITE_FACTS}):
+            conn.execute("INSERT INTO web.crawl_domains (campaign_id, domain, country_code, state) "
+                         "VALUES (%s, %s, 'PK', 'done')", [campaign, domain])
+        for domain, url, kind in sorted({(f[0], f[1], f[2]) for f in WEBSITE_FACTS if f[1]}):
+            conn.execute("INSERT INTO web.pages (domain, url, campaign_id, kind, http_status, title, text, "
+                         "parser_version, fetched_at) VALUES (%s, %s, %s, %s, 200, 'Page', 'text', 'p1', now())",
+                         [domain, url, campaign, kind])
+        for domain, url, _, field, value, method, evidence in WEBSITE_FACTS:
+            conn.execute("INSERT INTO web.facts (domain, url, field, value, source, evidence, extractor_version, "
+                         "campaign_id) VALUES (%s, %s, %s, %s, %s, %s, 'p1', %s)",
+                         [domain, url, field, value, method, evidence, campaign])
+    return run("websites.profiles")
+
+
+def test_websites_pipeline_lands_facts_in_silver(websites):
+    assert_completed(websites)
+    facts = query("silver.domain_facts", {"source": "website", "country": "PK"})
+    assert len(facts) == len(WEBSITE_FACTS) - 1                           # the unknown field is left out
+    systems = {(f["field"], f["method"]): f for f in facts if f["domain"] == "systems-ltd.com"}
+    assert systems[("city", "jsonld")]["value"] == "Gulberg III, Lahore"     # engine alias -> contract field
+    assert systems[("email", "link")]["value"] == "info@systems-ltd.com"
+    assert systems[("city", "jsonld")]["evidence_type"] == "home" and systems[("summary", "llm")]["evidence_type"] == "domain"
+    assert stage_map(websites["id"])["SILVER_TRANSFORM"]["records_rejected"] == 1
+
+
+def test_gold_domain_profiles_merge_every_source(websites):
+    profiles = {p["domain"]: p for p in serving("SELECT * FROM gold.domain_profiles")}
+    systems = profiles["systems-ltd.com"]
+    assert systems["company_name"] == "Systems Limited"                   # JSON-LD, tagline trimmed
+    assert systems["summary"] == "Systems builds software for banks and telecoms."
+    assert systems["city"] == "Lahore"                                      # gazetteer match inside the address
+    assert systems["founded_year"] == 1977 and systems["employees"] == "6000"   # a Wikidata record beats the LLM
+    assert systems["facebook"] == "https://www.facebook.com/SystemsLtd"
+    assert systems["x_twitter"] == "https://x.com/SystemsLtdPK"             # stated by a record beats a mere link
+    assert systems["emails"] == ["info@systems-ltd.com"]
+    assert set(systems["sources"]) >= {"website", "wikidata"} and systems["pages_crawled"] == 3
+    assert systems["field_sources"]["founded_year"] == "wikidata:record"
+    assert systems["field_sources"]["summary"] == "website:llm"
+    assert systems["organization_id"] is not None
+    shop = profiles["newshop.com.pk"]
+    assert (shop["company_name"], shop["category_group"], shop["sources"]) == ("New Shop", "Retail", ["website"])
+    assert profiles["hbl.com"]["company_name"] == "Habib Bank Limited"     # Wikidata alone also gives a profile
+
+
+@pytest.mark.parametrize("dataset_id", ["bronze.website_facts", "silver.domain_facts", "gold.domain_profiles"])
+def test_explorer_queries_website_datasets(websites, dataset_id):
+    test_explorer_queries_every_new_dataset(websites, dataset_id)

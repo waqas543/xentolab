@@ -1,0 +1,32 @@
+# Template for a custom crawl job: copy, rename and edit. Run with:
+#   python -m app.cli run-job --job example_site_crawl
+job_name: example_site_crawl
+job_type: site_crawl
+description: Crawl a site's about/contact pages and extract contacts, metadata and page text.
+source: web
+
+seed_urls:
+  - https://example.com/
+crawl:
+  max_depth: 2
+  max_pages: 20
+  allowed_domains: []            # empty = the seed URLs' domains
+  include_patterns: [about, contact, team, company]
+  # exclude_patterns default to images, documents, feeds, mailto/tel
+
+loader: http                     # static site: no JS rendering needed
+render_js: false
+rate_limit:
+  requests_per_second: 0.5
+  max_concurrency: 2
+retry:
+  max_attempts: 2
+  backoff_seconds: 2
+
+parsers:
+  - contact_extractor            # -> example_site_crawl_contacts_*.jsonl
+  - metadata_extractor           # -> example_site_crawl_metadata_*.jsonl
+  - html_parser                  # -> example_site_crawl_pages_*.jsonl (data.html_parser)
+writers: [jsonl_writer]
+output_dir: output/data
+max_records_per_jsonl_file: 1000

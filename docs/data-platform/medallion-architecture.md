@@ -14,7 +14,7 @@ flowchart LR
 | Artifact | The original download, checksummed, never overwritten | `bronze/osm/artifacts/<id>/<file>.osm.pbf` |
 | Bronze | Everything the source contains, plus lineage columns. Enough to rebuild Silver without downloading again. | `bronze.osm_nodes`, `bronze.osm_ways` (with ordered `node_refs`), `bronze.osm_relations` (with `members`) |
 | Silver | Normalized, typed **observations**. No merging across records. | `silver.places`, `silver.rejects`, `silver.geo_boundaries`, `silver.geo_places` |
-| Gold | Business-level entities resolved across sources, with provenance | `gold.businesses`, `gold.business_sources`, `gold.organizations`, `gold.domains` |
+| Gold | Business-level entities resolved across sources, with provenance | `gold.businesses`, `gold.business_sources`, `gold.organizations`, `gold.domains`, `gold.domain_profiles` |
 
 ## Bronze
 
@@ -64,14 +64,36 @@ Sources that describe something other than a location write their own shared con
 | `silver.organizations` | Wikidata, OpenCorporates | organization record (company, brand, institution): names, aliases, legal name, types, industries, website/domain, HQ, coordinates, inception, status, registry id, parent, identifiers |
 | `silver.web_domains` | Common Crawl | registrable domain seen by the crawler: pages, hosts, languages, status mix, homepage + its WARC reference, domain type, business-candidate flag |
 | `silver.org_mentions` | GDELT | normalized organization name: mentions, articles, outlets, first/last seen, tone, themes, places |
+| `silver.domain_facts` | Company websites (scraping engine), and any future fact source | one observed fact about the company behind a domain (see below) |
 | `silver.geo_places` | GeoNames, OSM | populated place: kind, population, local name, admin names, alternate names |
 | `silver.postal_codes` | GeoNames | postal code with place and admin names |
+
+### `silver.domain_facts`: one format for everything known about a domain
+
+Any source that knows something about the company behind a web domain writes it in this shape, and Gold merges all of
+them into `gold.domain_profiles`. Adding a source never touches Gold. See
+[adding-a-source.md](adding-a-source.md#a-source-of-domain-facts).
+
+| Column | Meaning |
+|---|---|
+| `domain`, `country_code` | registrable domain and run country |
+| `field` | from the shared vocabulary `DOMAIN_FACT_FIELDS`: `company_name`, `description`, `summary`, `industry`, `category_group`, `city`, `address`, `founded_year`, `employees`, `market_cap`, `revenue`, `financial_info`, `email`, `phone`, `social.<network>` |
+| `value` | normalized: E.164 phones, lower-case emails, canonical profile URLs (`normalize.social_profile`) |
+| `source` | the provider, e.g. `website` |
+| `method` | how it was obtained, from `DOMAIN_FACT_METHODS`: `site` (a custom per-site parser), `jsonld`, `record` (a registry or knowledge-base record), `meta`, `link`, `text`, `llm` |
+| `evidence`, `evidence_url`, `evidence_type` | the quote or raw value, the page or record it came from, and the page kind (`home`, `about`, `contact`…, `record`, or `domain` for domain-level facts) |
+| `confidence`, `observed_at` | plus the usual lineage columns |
+
+The SILVER_QUALITY suite rejects a version with unknown fields or methods (`quality/suites.py`).
 
 ## Gold
 
 - `gold.businesses`: one row per resolved real-world location. Attributes are chosen by survivorship, ranked by source
   priority (`gold/builder.py: SOURCE_PRIORITY`) and then by completeness. `sources`, `source_count`, `member_count`
   and `conflicts` (fields where members disagree) are recorded.
+- `gold.businesses.rating` (1-5 stars) and `review_count` come from the sources that rate places (Google Maps, read
+  from Silver `attributes.rating` / `attributes.reviews`). When several members are rated, the rating backed by the
+  most reviews wins; `field_sources.rating` names its source.
 - **Field-level provenance:** `gold.businesses.field_sources` records which source supplied each attribute, e.g.
   `{"name": "osm", "website": "overture", "phone": "osm", …}`. `source_confidence` is the best provider confidence.
   Clusters whose members all have provider confidence below 0.3 stay in Silver but are not promoted to Gold. OSM, with
@@ -95,6 +117,15 @@ Sources that describe something other than a location write their own shared con
 - `gold.domains`: domains used by businesses, stated by organizations, **or discovered by the crawl**. Each has
   business and organization counts, crawl pages, languages, homepage status, domain type and the business-candidate
   flag. Crawl-only domains are leads.
+- `gold.domain_profiles`: **the company behind each web domain**, merged from every source's `silver.domain_facts`
+  and from organization records that state a website (`silver.organizations`, which become `record` facts). Each
+  field takes the first **method** in its precedence list that has a value (`gold/domain_profiles.py: PRECEDENCE`):
+  a custom site parser first, then the company's own markup, then registry and knowledge-base records, then meta tags,
+  and LLM extraction last, except for the summary, where it comes first. Within a method the most frequent value
+  wins, with ties going to the home page and then to the higher-priority source. The city is resolved against the
+  gazetteer, so "4K Model Town, Lahore" gives Lahore. `field_sources` records `source:method` per field, for example
+  `{"founded_year": "wikidata:record", "summary": "website:llm"}`. The mobile app's `app.websites` serves these
+  profiles without the provenance columns.
 - `gold.cities`: cities and towns from the preferred gazetteer, with population, business count, website and phone
   coverage, and **businesses per 10,000 residents**. Same-named places attribute businesses to the most populous one.
 

@@ -20,7 +20,8 @@ SERVING_TABLES = {
         "admin2", "city", "locality", "postal_code", "address", "latitude", "longitude", "website", "domain", "tld",
         "phone", "email", "brand_name", "brand_wikidata", "organization_id", "sources", "source_count",
         "member_count", "has_website", "has_phone", "has_email", "has_address", "completeness", "conflicts",
-        "source_updated_at", "built_at", "field_sources", "source_confidence", "wikidata_id", "enriched_by"]),
+        "source_updated_at", "built_at", "field_sources", "source_confidence", "wikidata_id", "enriched_by",
+        "rating", "review_count"]),
     "gold.business_sources": ("gold.business_sources", [
         "gold_id", "silver_id", "country_code", "source", "source_record_id", "artifact_id", "silver_version_id",
         "pipeline_run_id", "transformation_version", "match_confidence", "is_primary"]),
@@ -37,6 +38,11 @@ SERVING_TABLES = {
         "domain", "country_code", "tld", "business_count", "organization_count", "sources", "top_category_group",
         "organization_id", "domain_type", "is_business_candidate", "crawl_pages", "crawl_captures", "crawl_hosts",
         "crawl_first_seen", "crawl_last_seen", "crawl_languages", "homepage_url", "homepage_status", "crawl"]),
+    "gold.domain_profiles": ("gold.domain_profiles", [
+        "domain", "country_code", "organization_id", "company_name", "summary", "industry", "category_group", "city",
+        "founded_year", "employees", "market_cap", "revenue", "financial_info", "facebook", "instagram", "x_twitter",
+        "linkedin", "youtube", "tiktok", "pinterest", "whatsapp", "threads", "emails", "phones", "sources",
+        "pages_crawled", "fact_count", "field_sources", "observed_at"]),
     "gold.cities": ("gold.cities", [
         "city_id", "country_code", "name", "name_local", "kind", "admin1", "admin2", "latitude", "longitude",
         "population", "business_count", "with_website", "with_phone", "organizations", "businesses_per_10k",

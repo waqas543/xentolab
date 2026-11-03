@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CompanyRow } from '../components/rows';
@@ -22,8 +22,13 @@ export function HomeScreen() {
       contentContainerStyle={{ paddingTop: insets.top + space.lg, paddingBottom: space.xl }}
       refreshControl={<RefreshControl refreshing={home.isRefetching} onRefresh={() => { home.refetch(); }} tintColor={c.primary} colors={[c.primary]} />}>
       <View style={styles.pad}>
-        <Text style={[styles.hello, { color: c.muted }]}>Find businesses across Pakistan</Text>
-        <Text style={[styles.brand, { color: c.text }]}>XentoLab</Text>
+        <View style={styles.brandRow}>
+          <Image source={require('../assets/logo.png')} style={styles.logo} accessibilityIgnoresInvertColors />
+          <View>
+            <Text style={[styles.brand, { color: c.text }]}>XentoLab</Text>
+            <Text style={[styles.hello, { color: c.muted }]}>Find businesses across Pakistan</Text>
+          </View>
+        </View>
 
         <Pressable
           onPress={() => nav.navigate('Tabs', { screen: 'Search' })}
@@ -154,7 +159,9 @@ const styles = StyleSheet.create({
   pad: { paddingHorizontal: space.lg },
   marginH: { marginHorizontal: space.lg },
   hello: { fontSize: 15, fontWeight: '500' },
-  brand: { fontSize: 32, fontWeight: '800', letterSpacing: -0.5, marginBottom: space.lg },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.lg },
+  logo: { width: 40, height: 40 },
+  brand: { fontSize: 28, fontWeight: '800', letterSpacing: -0.5, lineHeight: 32 },
   fakeSearch: { flexDirection: 'row', alignItems: 'center', gap: space.sm, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: space.md, minHeight: 52 },
   fakeSearchText: { fontSize: 16 },
   nearMe: { flexDirection: 'row', alignItems: 'center', gap: space.md, borderRadius: radius.lg, padding: space.lg, marginTop: space.md },

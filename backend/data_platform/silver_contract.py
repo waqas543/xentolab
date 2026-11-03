@@ -120,6 +120,44 @@ WEB_DOMAINS_SCHEMA = pa.schema([
     ("transformation_version", pa.string()), ("ingested_at", pa.timestamp("s", tz="UTC")),
 ])
 
+# Facts about a web domain (the company behind it), one row per (domain, field, value) observation.
+# Any source can contribute in this shape: the company's own website (via the scraping engine), a stock
+# exchange listing, a business directory... Gold merges them into gold.domain_profiles by field precedence.
+DOMAIN_FACTS_SCHEMA = pa.schema([
+    ("domain", pa.string()), ("country_code", pa.string()),
+    ("field", pa.string()),                 # one of DOMAIN_FACT_FIELDS
+    ("value", pa.string()),                 # normalized (E.164 phones, lower-case emails, canonical profile URLs)
+    ("source", pa.string()),                # provider: website, psx, ...
+    ("method", pa.string()),                # one of DOMAIN_FACT_METHODS: how the value was obtained
+    ("evidence", pa.string()),              # the quote / raw value it came from, when there is one
+    ("evidence_url", pa.string()),          # the page or record it was read from
+    ("evidence_type", pa.string()),         # home | about | contact | company | team | record | domain
+    ("confidence", pa.float64()),
+    ("observed_at", pa.timestamp("s", tz="UTC")),
+    ("source_record_id", pa.string()),
+    ("artifact_id", pa.int64()), ("bronze_version_id", pa.int64()), ("pipeline_run_id", pa.int64()),
+    ("transformation_version", pa.string()), ("ingested_at", pa.timestamp("s", tz="UTC")),
+])
+
+DOMAIN_FACT_SOCIAL_NETWORKS = ("facebook", "instagram", "x_twitter", "linkedin", "youtube", "tiktok", "pinterest",
+                               "whatsapp", "threads")
+DOMAIN_FACT_FIELDS = frozenset({
+    "company_name", "description", "summary", "industry", "category_group", "city", "address", "founded_year",
+    "employees", "market_cap", "revenue", "financial_info", "email", "phone",
+    *(f"social.{network}" for network in DOMAIN_FACT_SOCIAL_NETWORKS),
+})
+# How a value was obtained, from most to least deliberate. Gold precedence is expressed in these terms, so a
+# new source only has to say which method each of its facts came from.
+DOMAIN_FACT_METHODS = (
+    "site",      # a custom parser written for that one site
+    "jsonld",    # schema.org markup the company published on its site
+    "record",    # a structured record from a registry, exchange or knowledge base (Wikidata, OpenCorporates, PSX)
+    "meta",      # HTML meta / Open Graph tags
+    "link",      # hyperlinks on the site: social profiles, mailto:, tel:
+    "text",      # patterns found in page text
+    "llm",       # language-model extraction (quoted evidence verified against the text)
+)
+
 # Organizations mentioned in news, aggregated per normalized name (a discovery / popularity signal).
 ORG_MENTIONS_SCHEMA = pa.schema([
     ("name_key", pa.string()), ("source", pa.string()), ("country_code", pa.string()),

@@ -5,9 +5,10 @@ PBF     ?=
 COUNTRY ?= PK
 
 .PHONY: help up start dev setup test data-platform-setup data-platform-up data-platform-api data-platform-worker \
-        data-platform-web pipeline-osm-pakistan pipeline-osm pipeline-overture pipeline-geonames pipeline-wikidata \
-        pipeline-commoncrawl pipeline-gdelt pipeline-opencorporates pipeline-all data-platform-test data-platform-migrate \
-        data-platform-sync mobile-android app-schema app-dump
+        data-platform-web pipeline-osm-pakistan pipeline-osm pipeline-overture pipeline-googlemaps pipeline-geonames pipeline-wikidata \
+        pipeline-commoncrawl pipeline-gdelt pipeline-websites pipeline-opencorporates pipeline-all data-platform-test data-platform-migrate \
+        data-platform-sync mobile-android app-schema app-dump scrape-up scrape-agent \
+        scrape-seed scrape-ingest scrape-status scrape-export scrape-proxy-check
 .DEFAULT_GOAL := help
 
 help:                           ## list commands
@@ -53,6 +54,9 @@ RUN = cd backend && $(PY) -m data_platform run
 pipeline-overture:              ## Overture places for COUNTRY (default PK)
 	$(RUN) overture.places -p country=$(COUNTRY) --wait
 
+pipeline-googlemaps:            ## Google Maps records in data/google_map/*.jsonl (or SRC=file|folder); only new records are added
+	$(RUN) googlemaps.places -p country=$(COUNTRY) $(if $(SRC),-p source_path=$(SRC)) --wait
+
 pipeline-geonames:              ## GeoNames gazetteer (cities, villages, postal codes) for COUNTRY
 	$(RUN) geonames.country -p country=$(COUNTRY) --wait
 
@@ -64,6 +68,9 @@ pipeline-commoncrawl:           ## Common Crawl domain discovery for COUNTRY's c
 
 pipeline-gdelt:                 ## GDELT news mentions since the last run (HOURS=24 on the first run)
 	$(RUN) gdelt.mentions -p country=$(COUNTRY) -p hours=$(or $(HOURS),24) --wait
+
+pipeline-websites:              ## company-website facts collected by the scraping engine -> Bronze/Silver/Gold profiles
+	$(RUN) websites.profiles -p country=$(COUNTRY) --wait
 
 pipeline-opencorporates:        ## OpenCorporates lookups (needs DP_SECRET_OPENCORPORATES_API_TOKEN)
 	$(RUN) opencorporates.lookup -p country=$(COUNTRY) --wait
@@ -80,6 +87,33 @@ test: data-platform-test        ## backend test suite
 
 data-platform-test:
 	cd backend && $(PY) -m pytest tests -q
+
+# ---------------------------------------------------------------- website enrichment (scraping engine)
+# Needs Redis (brew services start redis) and, for the LLM step, Ollama. See docs/data-platform/web-enrichment.md.
+SCRAPE  = cd backend && $(PY) -m data_platform.scrape
+LIMIT   ?= 10
+
+scrape-up:                      ## every scraping agent in one process (development); Ctrl+C stops
+	$(SCRAPE) all
+
+scrape-agent:                   ## one agent: AGENT=frontier|fetcher|parser|enricher|writer [CONCURRENCY=n]; repeat to scale
+	$(SCRAPE) $(AGENT) $(if $(CONCURRENCY),--concurrency $(CONCURRENCY))
+
+scrape-seed:                    ## crawl the top LIMIT business domains for COUNTRY (or DOMAINS="a.pk b.pk")
+	$(SCRAPE) seed --country $(COUNTRY) --limit $(LIMIT) $(foreach d,$(DOMAINS),--domain $(d))
+
+scrape-ingest:                  ## queue websites.profiles for COUNTRY (a worker runs it; same as make pipeline-websites without --wait)
+	$(SCRAPE) ingest --country $(COUNTRY)
+
+scrape-status:                  ## queues, proxies, blobs and campaign progress
+	$(SCRAPE) status
+
+scrape-export:                  ## latest campaign's domain profiles as CSV (OUT=path, default data/exports/enrichment/)
+	@mkdir -p data/exports/enrichment
+	$(SCRAPE) export --out $(abspath $(or $(OUT),data/exports/enrichment/domain_profiles.csv))
+
+scrape-proxy-check:             ## probe every proxy
+	$(SCRAPE) proxy-check
 
 mobile-android:                 ## build and run the mobile app on an Android emulator / USB phone (start Metro: cd mobile && npm start)
 	cd mobile && $(NVM) && npm run android

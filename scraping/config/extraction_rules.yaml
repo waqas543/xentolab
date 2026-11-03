@@ -1,0 +1,131 @@
+# Default extraction rules. A job can extend any list through its own `extraction:` section.
+
+default_region: PK
+
+provinces:
+  Punjab: [punjab]
+  Sindh: [sindh]
+  Khyber Pakhtunkhwa: [khyber pakhtunkhwa, kpk, k.p.k, nwfp]
+  Balochistan: [balochistan, baluchistan]
+  Islamabad Capital Territory: [islamabad capital territory, ict]
+  Gilgit-Baltistan: [gilgit-baltistan, gilgit baltistan]
+  Azad Jammu and Kashmir: [azad jammu and kashmir, azad kashmir, ajk]
+
+# city -> province
+cities:
+  Karachi: Sindh
+  Lahore: Punjab
+  Islamabad: Islamabad Capital Territory
+  Rawalpindi: Punjab
+  Faisalabad: Punjab
+  Multan: Punjab
+  Peshawar: Khyber Pakhtunkhwa
+  Quetta: Balochistan
+  Hyderabad: Sindh
+  Gujranwala: Punjab
+  Sialkot: Punjab
+  Gujrat: Punjab
+  Sargodha: Punjab
+  Bahawalpur: Punjab
+  Sahiwal: Punjab
+  Sheikhupura: Punjab
+  Kasur: Punjab
+  Okara: Punjab
+  Jhang: Punjab
+  Rahim Yar Khan: Punjab
+  Dera Ghazi Khan: Punjab
+  Wah Cantt: Punjab
+  Taxila: Punjab
+  Jhelum: Punjab
+  Chiniot: Punjab
+  Muridke: Punjab
+  Sukkur: Sindh
+  Larkana: Sindh
+  Nawabshah: Sindh
+  Mirpur Khas: Sindh
+  Thatta: Sindh
+  Gwadar: Balochistan
+  Mardan: Khyber Pakhtunkhwa
+  Abbottabad: Khyber Pakhtunkhwa
+  Mingora: Khyber Pakhtunkhwa
+  Swat: Khyber Pakhtunkhwa
+  Kohat: Khyber Pakhtunkhwa
+  Nowshera: Khyber Pakhtunkhwa
+  Haripur: Khyber Pakhtunkhwa
+  Dera Ismail Khan: Khyber Pakhtunkhwa
+  Gilgit: Gilgit-Baltistan
+  Skardu: Gilgit-Baltistan
+  Muzaffarabad: Azad Jammu and Kashmir
+  Mirpur: Azad Jammu and Kashmir
+
+# Words that make a text span look like a street address.
+address_keywords:
+  - plot
+  - office
+  - suite
+  - floor
+  - building
+  - plaza
+  - tower
+  - road
+  - street
+  - st.
+  - block
+  - phase
+  - sector
+  - industrial area
+  - industrial estate
+  - main boulevard
+  - avenue
+  - dha
+  - gulberg
+  - clifton
+  - shahrah
+  - house no
+  - p.o. box
+
+# Legal-form suffixes stripped from company names before searching (longest first is not required).
+company_suffixes:
+  - (smc-private) limited
+  - (smc-pvt) ltd
+  - smc-private limited
+  - smc-pvt ltd
+  - (private) limited
+  - (pvt) limited
+  - (pvt.) limited
+  - (pvt) ltd
+  - (pvt.) ltd.
+  - (pvt.) ltd
+  - private limited
+  - pvt limited
+  - pvt. ltd.
+  - pvt ltd
+  - pvt. ltd
+  - public limited company
+  - limited
+  - ltd.
+  - ltd
+  - llp
+  - (guarantee) limited
+  - inc.
+  - inc
+  - plc
+
+# Domains that are never a company's own website, by category.
+generic_domains:
+  search: [duckduckgo.com, google.com, google.com.pk, bing.com, yahoo.com]
+  social: [facebook.com, fb.com, linkedin.com, instagram.com, twitter.com, x.com, youtube.com, tiktok.com,
+           pinterest.com, reddit.com, quora.com, medium.com, threads.net, whatsapp.com, t.me, telegram.me]
+  directory: [yellowpages.com.pk, businesslist.pk, pakbiz.com, yelu.pk, cybo.com, opencorporates.com, dnb.com,
+              zoominfo.com, crunchbase.com, kompass.com, emis.com, rocketreach.co, apollo.io, signalhire.com,
+              glassdoor.com, indeed.com, rozee.pk, mustakbil.com, bayrozgar.com, paperpk.com, pk.kompass.com,
+              infobel.com, foursquare.com, tripadvisor.com, google.com, wikipedia.org, wikidata.org,
+              pakistanyellowpages.com, cylex.pk, hotfrog.com.pk, find-us-here.com, trustpilot.com, bizapedia.com,
+              companieshouse.gov.uk, b2bhint.com, companyhub.pk, pkcompanies.com, comparably.com, owler.com]
+  marketplace: [daraz.pk, olx.com.pk, amazon.com, alibaba.com, aliexpress.com, indiamart.com, tradeindia.com,
+                made-in-china.com, ebay.com, etsy.com, zameen.com, pakwheels.com, foodpanda.pk, tradekey.com,
+                exportersindia.com, go4worldbusiness.com, ec21.com]
+  news: [dawn.com, tribune.com.pk, thenews.com.pk, brecorder.com, propakistani.pk, geo.tv, arynews.tv,
+         samaa.tv, nation.com.pk, pakobserver.net, dailytimes.com.pk, profit.pakistantoday.com.pk,
+         pakistantoday.com.pk, bloomberg.com, reuters.com, techjuice.pk, mettisglobal.news, businessrecorder.com]
+  government: [secp.gov.pk, fbr.gov.pk, psx.com.pk, sbp.org.pk, pakistan.gov.pk, gov.pk]

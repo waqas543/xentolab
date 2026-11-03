@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+
+# run artifacts
+output/data/*
+output/state/*
+output/logs/
+!output/data/.gitkeep
+!output/state/.gitkeep

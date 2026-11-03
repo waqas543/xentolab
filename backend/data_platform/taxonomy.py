@@ -6,6 +6,8 @@ that return the same (category_key, category, category_group, entity_type) shape
 
 from __future__ import annotations
 
+import re
+
 TAXONOMY_VERSION = "tax-v2"  # v2: Overture mapping (GeoNames / organization mappings are versioned by their adapters)
 
 GROUPS = [
@@ -194,6 +196,126 @@ def classify_geonames(feature_class: str | None, feature_code: str | None) \
         return None
     category, group, entity_type = GEONAMES_FEATURES[feature_code]
     return feature_code, category, group, entity_type
+
+
+# ---------------------------------------------------------------- Google Maps
+# Google gives one English category per place ("Fast food restaurant", "Toyota dealer"). Keyword rules, first match
+# wins; places that are not businesses are excluded, mirroring the OSM rules. When the category is missing, the
+# category the place was searched under decides. Versioned by the googlemaps adapter (GOOGLE_TAXONOMY_VERSION).
+# Keywords match at the start of a word ("pharma" -> "Pharmacy"); a trailing space makes them whole words
+# ("bar " is not "Barber"); a leading "~" matches anywhere ("~ologist" -> "Dermatologist").
+
+GOOGLE_TAXONOMY_VERSION = "gmaps-tax-1"
+
+_GOOGLE_EXCLUDED = (
+    "mosque", "place of worship", "church", "temple", "shrine", "gurdwara", "cemetery", "graveyard",
+    "police", "sheriff", "traffic officer", "fire station", "courthouse", "atm ",
+    "park ", "parks", "garden ", "playground", "athletic field", "barbecue area", "public beach", "bridge",
+    "tourist attraction", "historical", "landmark", "monument", "tourist information",
+    "bus station", "bus stop", "bus depot", "parking lot", "library", "community center",
+    "housing society", "housing complex", "housing development", "apartment building", "apartment complex",
+    "condominium complex", "townhouse complex", "teachers' housing", "water works", "water treatment",
+)
+_GOOGLE_NOT_EXCLUDED = ("amusement park", "garden furniture")
+_GOOGLE_RULES: list[tuple[str, tuple[str, ...]]] = [
+    ("Automotive", ("car ", "auto ", "automobile", "motorcycle", "motor vehicle", "motor scooter", "scooter", "tire",
+                    "tyre", "gas station", "natural gas station", "fuel", "petrol", "cng", "vehicle", "oil change",
+                    "wheel", "transmission shop", "engine rebuilding", "bike wash", "truck dealer", "toyota",
+                    "suzuki", "honda", "kia ", "audi ", "yamaha", "harley", "land rover", "saab", "rv detailing",
+                    "valet")),
+    ("Education", ("school", "preschool", "college", "university", "academy", "institute", "education", "tutor",
+                   "coaching", "kindergarten", "montessori", "training", "learning center", "studying center",
+                   "seminary", "madrasa", "faculty of", "academic department")),
+    ("Industry & Craft", ("manufacturer", "factory", "mill", "producer", "processing", "industr", "foundry",
+                          "tannery", "dyeworks", "iron works", "ironworks", "fabricat", "machin", "metal workshop",
+                          "welder", "carpenter", "electrician", "construction", "contractor", "farm", "brewery",
+                          "packaging company", "mining", "oil & natural gas", "power station", "electric utility",
+                          "solar energy", "plastic fabrication", "plastic injection", "exporter", "textiles",
+                          "livestock", "engineer")),
+    ("Health", ("pharma", "drug store", "hospital", "clinic", "dental", "dentist", "denture", "doctor", "physician",
+                "medical", "laboratory", "diagnostic", "optician", "optometrist", "eye care", "lasik", "veterinar",
+                "therap", "surgeon", "plastic surg", "~ologist", "pediatric", "gynec", "homeopath", "health",
+                "x-ray", "blood testing", "chiropract", "psychiatr", "psycholog", "hospice", "nursing home",
+                "ayurvedic", "orthodontist", "periodontist", "practitioner", "foot care", "fertility", "diabetes",
+                "addiction", "pain control", "pain management", "medicine", "assisted living", "maternity",
+                "family planning")),
+    ("Food & Drink", ("restaurant", "food", "cafe", "coffee", "bakery", "ice cream", "dessert", "sweets", "juice",
+                      "tea house", "bar ", "dhaba", "kebab", "shawarma", "pizza", "~burger", "grill", "steak house",
+                      "buffet", "caterer", "chophouse", "cupcake", "cookie", "patisserie", "frozen yogurt",
+                      "chocolate", "soup shop", "takeout", "hawker")),
+    ("Public & Non-profit", ("government", "post office", "embassy", "consulate", "association", "organization",
+                             "foundation", "non-profit", "non-governmental", "political party", "board of",
+                             "department of", "public prosecutor", "public defender", "registration office",
+                             "license office", "tax collector", "social security", "veterans", "food bank",
+                             "homeless", "lost property", "telephone exchange", "railway services")),
+    ("Finance", ("bank", "currency exchange", "money transfer", "mobile money", "financ", "insurance", "accountant",
+                 "accounting", "audit ", "auditor", "bookkeeping", "tax ", "income tax")),
+    ("Hospitality", ("hotel", "guest house", "guesthouse", "motel", "hostel", "lodge", "lodging", "resort",
+                     "homestay", "bed & breakfast", "serviced accommodation", "holiday", "boarding house",
+                     "furnished apartment", "villa ")),
+    ("Other Services", ("salon", "barber", "hairdresser", "beautician", "make-up", "spa ", "massage", "gym",
+                        "fitness", "martial arts", "sports club", "sports complex", "laundr", "dry clean",
+                        "tailor", "dressmaker", "sewing", "repair", "wedding", "banquet", "event venue", "marquee",
+                        "cleaning", "pet care", "photograph", "photo lab", "zoo ", "amusement", "internet cafe",
+                        "auditorium", "body shaping", "hair replacement", "hair transplant", "laser hair")),
+    ("Retail", ("store", "shop", "market ", "marketplace", "market place", "supermarket", "hypermarket", "mall",
+                "bazar", "bazaar", "boutique", "showroom", "outlet", "wholesale", "dealer", "jewel", "supplier",
+                "florist", "distributor", "merchant", "grocer")),
+    ("Professional Services", ("agency", "consult", "law", "attorney", "lawyer", "legal", "barrister", "notary",
+                               "real estate", "property", "courier", "logistics", "delivery", "freight", "shipping",
+                               "mailing", "transport", "trucking", "mover", "software", "computer", "marketing",
+                               "advertising", "design", "printing", "printer", "publisher", "architect",
+                               "employment", "event management", "event planner", "security service", "company",
+                               "corporate", "business", "office", "bpo", "e-commerce", "tour operator", "travel",
+                               "visa", "information services", "telecommunications", "network operator",
+                               "warehouse", "storage", "service")),
+]
+_GOOGLE_SEARCH_GROUPS = {
+    "services": "Other Services", "shopping": "Retail", "health": "Health", "automotive": "Automotive",
+    "food & drink": "Food & Drink", "education": "Education", "travel & lodging": "Hospitality",
+    "community": "Public & Non-profit", "finance": "Finance", "industry & trade": "Industry & Craft",
+}
+
+
+def _keyword_pattern(keywords: tuple[str, ...]) -> re.Pattern:
+    parts = [re.escape(k[1:]) if k.startswith("~") else r"\b" + re.escape(k) for k in keywords]
+    return re.compile("|".join(parts))
+
+
+_GOOGLE_EXCLUDED_RE = _keyword_pattern(_GOOGLE_EXCLUDED)
+_GOOGLE_NOT_EXCLUDED_RE = _keyword_pattern(_GOOGLE_NOT_EXCLUDED)
+_GOOGLE_RULES_RE = [(group, _keyword_pattern(keywords)) for group, keywords in _GOOGLE_RULES]
+
+
+def _google_text(value: str | None) -> str:
+    return f" {(value or '').lower()} "
+
+
+def is_google_excluded(label: str | None) -> bool:
+    text = _google_text(label)
+    return bool(_GOOGLE_EXCLUDED_RE.search(text)) and not _GOOGLE_NOT_EXCLUDED_RE.search(text)
+
+
+def _google_group(label: str | None) -> str | None:
+    text = _google_text(label)
+    return next((group for group, pattern in _GOOGLE_RULES_RE if pattern.search(text)), None) if label else None
+
+
+def classify_googlemaps(category: str | None, search_category: str | None, search_group: str | None) \
+        -> tuple[str | None, str | None, str, str] | None:
+    """(category_key, category, category_group, entity_type), or None when the place is not a business.
+
+    `category` is Google's own label for the place (None when unusable); `search_category` and `search_group`
+    describe the search that found it ("fast food restaurants", "Food & drink").
+    """
+    label = category or search_category
+    if is_google_excluded(label):
+        return None
+    group = _google_group(category) or _google_group(search_category) \
+        or _GOOGLE_SEARCH_GROUPS.get((search_group or "").strip().lower(), "Other Services")
+    key = "_".join(re.sub(r"[^0-9a-z]+", " ", label.lower()).split()) if label else None
+    entity_type = "organization" if group == "Public & Non-profit" else "business"
+    return key, label, group, entity_type
 
 
 # ---------------------------------------------------------------- organizations (Wikidata classes, registry types)
