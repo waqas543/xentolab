@@ -318,7 +318,7 @@ def domains(_: Viewer, filters: str | None = None):
         SELECT count(DISTINCT domain) AS unique_domains,
                count(*) FILTER (WHERE domain IS NOT NULL) AS with_domain,
                count(*) FILTER (WHERE domain IS NULL) AS without_domain,
-               count(*) FILTER (WHERE domain IS NULL AND website IS NOT NULL) AS platform_only,
+               count(*) FILTER (WHERE domain IS NULL AND (social_url IS NOT NULL OR website IS NOT NULL)) AS platform_only,
                count(*) AS businesses
         FROM gold.businesses WHERE {where}
     """, params)[0]

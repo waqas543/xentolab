@@ -14,6 +14,9 @@ const light = {
   onPrimary: '#FFFFFF',
   danger: '#C2410C',
   chip: '#EEF0F4',
+  warning: '#C2410C',
+  info: '#1971C2',
+  star: '#E8A500',
 };
 
 const dark: typeof light = {
@@ -28,6 +31,9 @@ const dark: typeof light = {
   onPrimary: '#06241B',
   danger: '#FB923C',
   chip: '#222731',
+  warning: '#FB923C',
+  info: '#5AA9F0',
+  star: '#F5C242',
 };
 
 export type Colors = typeof light;

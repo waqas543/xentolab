@@ -72,51 +72,106 @@ CREATE INDEX ON app_build.cities USING gin (name gin_trgm_ops);
 
 -- ---------------------------------------------------------------- places
 
+-- Ratings are ranked by a review-weighted score: a 5.0 from 3 reviews is not better than a 4.6 from 900. The score
+-- pulls each rating towards the country's average by RATING_PRIOR_REVIEWS virtual reviews.
+CREATE TEMP TABLE rating_prior AS
+SELECT country_code, sum(rating * review_count) / nullif(sum(review_count), 0) AS mean, 20 AS weight
+FROM gold.businesses WHERE rating IS NOT NULL AND review_count > 0 GROUP BY country_code;
+
 CREATE TABLE app_build.places AS
-WITH city_ids AS (                                   -- the city row that holds each name's counts
-    SELECT DISTINCT ON (country_code, name) country_code, name, id
-    FROM app_build.cities ORDER BY country_code, name, places DESC
-)
 SELECT b.gold_id                                      AS id,
        b.country_code,
        b.name,
-       coalesce(pg_temp.category_label(b.category), b.category_group) AS category,
+       nullif(b.name_local, b.name)                   AS local_name,
+       coalesce(b.category_label, pg_temp.category_label(b.category), b.category_group) AS category,
        nullif(b.category, '')                         AS category_key,
        b.category_group                               AS group_name,
+       pg_temp.category_label(b.subcategory)          AS subcategory,
        nullif(b.admin1, '')                           AS province,
        b.admin2                                       AS district,
        b.city,
-       ci.id                                          AS city_id,
+       pg_temp.city_id(b.city_id)                     AS city_id,
        CASE WHEN b.locality <> b.city THEN b.locality END AS area,
        b.postal_code,
        nullif(b.address, '')                          AS address,
-       b.latitude                                     AS lat,
-       b.longitude                                    AS lng,
-       b.geom,
+       -- A provider's town-centre default is not a position: such places stay listed in their city but are left
+       -- off maps, "nearby" and distances.
+       CASE WHEN coalesce(b.location_precision, 'exact') = 'exact' THEN b.latitude END  AS lat,
+       CASE WHEN coalesce(b.location_precision, 'exact') = 'exact' THEN b.longitude END AS lng,
+       CASE WHEN coalesce(b.location_precision, 'exact') = 'exact' THEN b.geom END      AS geom,
+       coalesce(b.location_precision = 'approximate', false) AS approximate_location,
        nullif(b.phone, '')                            AS phone,
+       coalesce(b.phone_kind, CASE WHEN b.phone IS NOT NULL THEN 'direct' END) AS phone_type,
        pg_temp.url(b.website)                         AS website,
+       b.website_kind = 'shared'                      AS website_shared,
+       pg_temp.url(b.social_url)                      AS social,
        nullif(b.email, '')                            AS email,
        CASE WHEN NOT pg_temp.is_source_link(b.domain) THEN b.domain END AS domain,
        nullif(b.brand_name, '')                       AS brand,
        b.organization_id                              AS company_id,
+       b.opening_hours,
+       b.opening_hours = '24/7'                       AS open_24_hours,
        b.has_phone,
        b.has_website AND pg_temp.url(b.website) IS NOT NULL AS has_website,
        b.has_email,
        b.completeness::int                            AS completeness,
        round(b.rating::numeric, 1)::float8            AS rating,
-       b.review_count                                 AS review_count
+       b.review_count                                 AS review_count,
+       CASE WHEN b.rating IS NOT NULL AND b.review_count > 0
+            THEN round(((b.rating * b.review_count + rp.mean * rp.weight) / (b.review_count + rp.weight))::numeric, 3)::float8
+       END                                            AS rating_score
 FROM gold.businesses b
-LEFT JOIN city_ids ci ON ci.country_code = b.country_code AND ci.name = b.city;
+LEFT JOIN rating_prior rp ON rp.country_code = b.country_code;
 
 ALTER TABLE app_build.places ADD PRIMARY KEY (id);
 CREATE INDEX ON app_build.places USING gist (geom);
 CREATE INDEX ON app_build.places USING gin (name gin_trgm_ops);
 CREATE INDEX ON app_build.places (country_code, group_name, category_key);
 CREATE INDEX ON app_build.places (city, area);
+CREATE INDEX ON app_build.places (city_id, area);
 CREATE INDEX ON app_build.places (province);
 CREATE INDEX ON app_build.places (company_id) WHERE company_id IS NOT NULL;
 CREATE INDEX ON app_build.places (domain) WHERE domain IS NOT NULL;
 CREATE INDEX ON app_build.places (completeness DESC, name);
+
+-- ---------------------------------------------------------------- market statistics
+-- Pre-aggregated so insight screens (a category's market, a city's profile, a brand's position) answer instantly.
+
+CREATE TABLE app_build.category_stats AS
+SELECT country_code, category_key, min(category) AS label,
+       mode() WITHIN GROUP (ORDER BY group_name) AS group_name,
+       count(*)::int AS places, count(DISTINCT city_id)::int AS cities,
+       count(*) FILTER (WHERE has_phone)::int AS with_phone,
+       count(*) FILTER (WHERE has_website)::int AS with_website,
+       count(*) FILTER (WHERE social IS NOT NULL)::int AS with_social,
+       count(rating_score)::int AS rated, avg(rating_score)::float8 AS avg_rating,
+       count(*) FILTER (WHERE open_24_hours)::int AS open_24h,
+       count(company_id)::int AS in_chains
+FROM app_build.places WHERE category_key IS NOT NULL GROUP BY 1, 2;
+ALTER TABLE app_build.category_stats ADD PRIMARY KEY (country_code, category_key);
+
+CREATE TABLE app_build.city_category_stats AS
+SELECT city_id, category_key, count(*)::int AS places,
+       count(*) FILTER (WHERE has_phone)::int AS with_phone,
+       count(*) FILTER (WHERE has_website)::int AS with_website,
+       count(rating_score)::int AS rated, avg(rating_score)::float8 AS avg_rating,
+       count(*) FILTER (WHERE open_24_hours)::int AS open_24h
+FROM app_build.places WHERE city_id IS NOT NULL AND category_key IS NOT NULL GROUP BY 1, 2;
+ALTER TABLE app_build.city_category_stats ADD PRIMARY KEY (city_id, category_key);
+CREATE INDEX ON app_build.city_category_stats (category_key, places DESC);
+
+CREATE TABLE app_build.country_stats AS
+SELECT country_code, count(*)::int AS places,
+       count(*) FILTER (WHERE has_phone)::int AS with_phone,
+       count(*) FILTER (WHERE has_website)::int AS with_website,
+       count(*) FILTER (WHERE social IS NOT NULL)::int AS with_social,
+       count(rating_score)::int AS rated, avg(rating_score)::float8 AS avg_rating,
+       count(*) FILTER (WHERE open_24_hours)::int AS open_24h
+FROM app_build.places GROUP BY 1;
+ALTER TABLE app_build.country_stats ADD PRIMARY KEY (country_code);
+
+CREATE INDEX ON app_build.places (category_key, city_id);
+CREATE INDEX ON app_build.places (category_key, rating_score DESC NULLS LAST) WHERE rating_score IS NOT NULL;
 
 -- ---------------------------------------------------------------- companies
 
@@ -125,7 +180,7 @@ SELECT o.organization_id                              AS id,
        o.country_code,
        o.name,
        nullif(o.legal_name, o.name)                   AS legal_name,
-       upper(left(o.industry, 1)) || substr(o.industry, 2) AS industry,
+       nullif(upper(left(o.industry, 1)) || substr(o.industry, 2), '') AS industry,
        o.category_group                               AS group_name,
        o.location_count                               AS locations,
        o.city_count                                   AS cities,
@@ -251,6 +306,8 @@ ANALYZE app_build.places;
 ANALYZE app_build.companies;
 ANALYZE app_build.cities;
 ANALYZE app_build.websites;
+ANALYZE app_build.category_stats;
+ANALYZE app_build.city_category_stats;
 
 -- ---------------------------------------------------------------- swap
 

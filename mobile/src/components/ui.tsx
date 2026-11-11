@@ -50,7 +50,7 @@ export function GroupIcon({ group, size = 40 }: { group: string | null | undefin
 export function IconCircle({ name, size = 40, color }: { name: IconName; size?: number; color?: string }) {
   const c = useColors();
   return (
-    <View style={[styles.groupIcon, { width: size, height: size, borderRadius: size / 3.2, backgroundColor: c.primarySoft }]}>
+    <View style={[styles.groupIcon, { width: size, height: size, borderRadius: size / 3.2, backgroundColor: color ? `${color}1F` : c.primarySoft }]}>
       <Ionicons name={name} size={size * 0.5} color={color ?? c.primary} />
     </View>
   );

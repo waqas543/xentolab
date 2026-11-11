@@ -137,8 +137,8 @@ def test_gold_merges_duplicates_and_keeps_provenance(first_run):
     assert org[0]["location_count"] == 2
     domains = {d["domain"] for d in serving("SELECT domain FROM gold.domains WHERE country_code = 'PK'")}
     assert domains == {"aylanto.com", "systems-ltd.com"}                       # facebook.com is a platform
-    khaadi = serving("SELECT website, domain FROM gold.businesses WHERE name = 'Khaadi'")[0]
-    assert khaadi["domain"] is None and "facebook.com" in khaadi["website"]
+    khaadi = serving("SELECT website, social_url, has_website FROM gold.businesses WHERE name = 'Khaadi'")[0]
+    assert khaadi["website"] is None and not khaadi["has_website"] and "facebook.com" in khaadi["social_url"]
 
 
 def test_quality_results_recorded(first_run):

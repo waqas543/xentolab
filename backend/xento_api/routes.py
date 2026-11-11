@@ -46,18 +46,22 @@ Limit = Annotated[int, Query(ge=1, le=50)]
 
 # ---------------------------------------------------------------- places
 
-PLACE_COLUMNS = """p.id, p.name, p.category, p.category_key, p.group_name, p.city, p.area, p.address, p.phone,
-    p.website, p.email, p.lat, p.lng, p.brand, p.company_id, p.rating, p.review_count"""
+PLACE_COLUMNS = """p.id, p.name, p.local_name, p.category, p.category_key, p.subcategory, p.group_name, p.city,
+    p.city_id, p.area, p.address, p.phone, p.phone_type, p.website, p.social, p.email, p.lat, p.lng,
+    p.approximate_location, p.brand, p.company_id, p.opening_hours, p.rating, p.review_count, p.rating_score"""
 POINT = "ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)"
 
 
 def place(row: dict) -> dict:
     item = {
-        "id": row["id"], "name": row["name"], "category": row["category"], "category_key": row["category_key"],
-        "group": row["group_name"], "city": row["city"], "area": row["area"], "address": row["address"],
-        "phone": row["phone"], "website": row["website"], "email": row["email"], "lat": row["lat"], "lng": row["lng"],
-        "brand": row["brand"], "organization_id": row["company_id"], "rating": row["rating"],
-        "review_count": row["review_count"],
+        "id": row["id"], "name": row["name"], "local_name": row["local_name"], "category": row["category"],
+        "category_key": row["category_key"], "subcategory": row["subcategory"], "group": row["group_name"],
+        "city": row["city"], "city_id": row["city_id"], "area": row["area"], "address": row["address"],
+        "phone": row["phone"], "phone_type": row["phone_type"], "website": row["website"], "social": row["social"],
+        "email": row["email"], "lat": row["lat"], "lng": row["lng"],
+        "approximate_location": row["approximate_location"], "brand": row["brand"],
+        "organization_id": row["company_id"], "opening_hours": row["opening_hours"], "rating": row["rating"],
+        "review_count": row["review_count"], "rating_score": row["rating_score"],
     }
     if row.get("distance_km") is not None:
         item["distance_km"] = round(row["distance_km"], 2)
@@ -70,6 +74,7 @@ def list_businesses(
     group: str | None = None,
     category: str | None = None,
     city: str | None = None,
+    city_id: str | None = None,
     area: str | None = None,
     province: str | None = None,
     organization: str | None = None,
@@ -78,10 +83,11 @@ def list_businesses(
     has_phone: bool = False,
     has_website: bool = False,
     has_email: bool = False,
+    open_24h: bool = False,
     lat: Annotated[float | None, Query(ge=-90, le=90)] = None,
     lng: Annotated[float | None, Query(ge=-180, le=180)] = None,
     radius_km: Annotated[float, Query(gt=0, le=100)] = 5,
-    sort: Literal["best", "name", "distance"] = "best",
+    sort: Literal["best", "name", "distance", "rating"] = "best",
     offset: Offset = 0,
     limit: Limit = 20,
 ):
@@ -90,13 +96,22 @@ def list_businesses(
     if searching:
         params.update(like=like(q), exact=q.strip(), prefix=like(q)[1:])
         where.append("(p.name ILIKE %(like)s OR p.brand ILIKE %(like)s)")
-    for column, value in (("group_name", group), ("category_key", category), ("city", city), ("area", area),
+    if city and not city_id:
+        # A city name means the main city of that name, not every village that shares it.
+        found_city = one("SELECT id FROM app.cities WHERE name = %(name)s"
+                         + (" AND country_code = %(country)s" if country else "") + " ORDER BY places DESC LIMIT 1",
+                         {"name": city, "country": country})
+        city_id = found_city["id"] if found_city else None
+        if city_id is None:
+            return page([], 0, offset, limit)
+    for column, value in (("group_name", group), ("category_key", category), ("city_id", city_id), ("area", area),
                           ("province", province), ("company_id", organization), ("domain", website),
                           ("country_code", country)):
         if value:
             params[column] = value
             where.append(f"p.{column} = %({column})s")
-    for column, enabled in (("has_phone", has_phone), ("has_website", has_website), ("has_email", has_email)):
+    for column, enabled in (("has_phone", has_phone), ("has_website", has_website), ("has_email", has_email),
+                            ("open_24_hours", open_24h)):
         if enabled:
             where.append(f"p.{column}")
 
@@ -115,10 +130,15 @@ def list_businesses(
         order = f"p.geom <-> {POINT}"
     elif sort == "name":
         order = "p.name, p.id"
+    elif sort == "rating":
+        # Review-weighted score first: a 4.6 from 900 reviews ranks above a 5.0 from 3.
+        where.append("p.rating_score IS NOT NULL")
+        order = "p.rating_score DESC, p.review_count DESC, p.id"
     elif searching:
-        order = "(lower(p.name) = lower(%(exact)s)) DESC, (p.name ILIKE %(prefix)s) DESC, p.completeness DESC, p.name, p.id"
+        order = ("(lower(p.name) = lower(%(exact)s)) DESC, (p.name ILIKE %(prefix)s) DESC, p.completeness DESC, "
+                 "p.rating_score DESC NULLS LAST, p.name, p.id")
     else:
-        order = "p.completeness DESC, p.name, p.id"
+        order = "p.completeness DESC, p.rating_score DESC NULLS LAST, p.name, p.id"
 
     condition = " AND ".join(where)
     total = one(f"SELECT count(*) AS n FROM app.places p WHERE {condition}", params)["n"]
@@ -131,7 +151,7 @@ def list_businesses(
 
 @router.get("/businesses/{business_id}")
 def get_business(business_id: str):
-    row = one(f"SELECT {PLACE_COLUMNS}, p.postal_code, p.province, p.district, p.city_id "
+    row = one(f"SELECT {PLACE_COLUMNS}, p.postal_code, p.province, p.district "
               "FROM app.places p WHERE p.id = %(id)s", {"id": business_id})
     if row is None:
         raise HTTPException(404, "Place not found")
@@ -142,6 +162,8 @@ def get_business(business_id: str):
             SELECT id, name, industry, locations FROM app.companies
             WHERE id = %(id)s ORDER BY locations DESC LIMIT 1
         """, {"id": row["company_id"]})
+    from .insights import business_context
+    item |= business_context(row)
     if row["lat"] is not None:
         params = {"id": business_id, "lat": row["lat"], "lng": row["lng"]}
         item["nearby"] = [place(r) for r in rows(f"""
@@ -210,10 +232,12 @@ def get_organization(organization_id: str):
     if row is None:
         raise HTTPException(404, "Company not found")
     cities = rows("""
-        SELECT city AS name, max(city_id) AS id, count(*)::int AS locations FROM app.places
-        WHERE company_id = %(id)s AND city IS NOT NULL GROUP BY city ORDER BY 3 DESC, 1 LIMIT 10
+        SELECT max(city) AS name, city_id AS id, count(*)::int AS locations FROM app.places
+        WHERE company_id = %(id)s AND city_id IS NOT NULL GROUP BY city_id ORDER BY 3 DESC, 1 LIMIT 10
     """, {"id": organization_id})
+    from .insights import organization_insights
     return company(row) | {
+        "insights": organization_insights(organization_id, None) if row["locations"] >= 2 else None,
         "legal_name": row["legal_name"], "founded": row["founded"], "employees": row["employees"],
         "parent": row["parent"], "also_known_as": row["aliases"] or [],
         "registration_number": row["registration_number"], "status": row["status"],
@@ -270,8 +294,8 @@ def get_city(city_id: str):
     row = one(f"SELECT {CITY_COLUMNS}, c.country_code FROM app.cities c WHERE c.id = %(id)s", {"id": city_id})
     if row is None:
         raise HTTPException(404, "City not found")
-    params = {"name": row["name"], "country": row["country_code"]}
-    in_city = "city = %(name)s AND country_code = %(country)s"
+    params = {"name": row["name"], "country": row["country_code"], "city_id": row["id"]}
+    in_city = "city_id = %(city_id)s"
     groups = rows(f"""
         SELECT group_name AS name, count(*)::int AS count FROM app.places
         WHERE {in_city} AND group_name IS NOT NULL GROUP BY 1 ORDER BY 2 DESC
@@ -287,9 +311,11 @@ def get_city(city_id: str):
     brands = rows(f"""
         SELECT o.id, o.name, count(*)::int AS locations
         FROM app.places p JOIN app.companies o ON o.id = p.company_id AND o.country_code = p.country_code
-        WHERE p.city = %(name)s AND p.country_code = %(country)s GROUP BY 1, 2 ORDER BY 3 DESC, 2 LIMIT 10
+        WHERE p.city_id = %(city_id)s GROUP BY 1, 2 ORDER BY 3 DESC, 2 LIMIT 10
     """, params)
-    return city(row) | {"groups": groups, "areas": areas, "brands": brands, "categories": categories}
+    from .insights import city_insights
+    return city(row) | {"groups": groups, "areas": areas, "brands": brands, "categories": categories,
+                        "insights": city_insights(row)}
 
 
 # ---------------------------------------------------------------- websites
@@ -391,8 +417,10 @@ def home():
         cities = rows(f"SELECT {CITY_COLUMNS} FROM app.cities c ORDER BY c.places DESC LIMIT 10")
         brands = rows(f"SELECT {COMPANY_COLUMNS} FROM app.companies o WHERE o.locations >= 2 "
                       "ORDER BY o.locations DESC LIMIT 12")
+        from .insights import home_insights
         return {"totals": totals, "groups": groups, "provinces": provinces,
-                "top_cities": [city(r) for r in cities], "top_companies": [company(r) for r in brands]}
+                "top_cities": [city(r) for r in cities], "top_companies": [company(r) for r in brands],
+                "insights": home_insights()}
     return cached("home", build)
 
 

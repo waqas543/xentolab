@@ -13,7 +13,8 @@ from . import repository
 from .geo import Boundary, GeoIndex, Place
 from .lake.reader import dataset_files, duck, parquet_source
 
-CONTRACT_VERSION = "silver-contract-2"   # 2: social_links, silver.geo_places (places schema unchanged since)
+CONTRACT_VERSION = "silver-contract-3"   # 3: places carry city_id and location_precision
+# 2: social_links, silver.geo_places
 
 # Which source's populated places define city / locality when several sources provide them.
 # GeoNames is a complete gazetteer (every village, with population); OSM places are the fallback.
@@ -29,6 +30,10 @@ PLACES_SCHEMA = pa.schema([
     ("brand_name", pa.string()), ("brand_wikidata", pa.string()), ("operator", pa.string()), ("wikidata", pa.string()),
     ("country_code", pa.string()), ("admin1", pa.string()), ("admin2", pa.string()), ("city", pa.string()),
     ("locality", pa.string()), ("locality_distance_km", pa.float64()),
+    ("city_id", pa.string()),               # gazetteer place id of `city`: same-named towns stay apart
+    # exact | approximate. Approximate = the provider placed the record on a town / city centre or stacked many
+    # unrelated records on one point; it is kept, but not used for maps, distances or point-based geography.
+    ("location_precision", pa.string()),
     ("postal_code", pa.string()), ("street", pa.string()), ("housenumber", pa.string()), ("address", pa.string()),
     ("latitude", pa.float64()), ("longitude", pa.float64()),
     ("website", pa.string()), ("normalized_domain", pa.string()), ("tld", pa.string()),
@@ -224,9 +229,87 @@ def load_geo_index(country: str) -> tuple[GeoIndex | None, list[int]]:
             columns = {r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
             admin = ("country_code, admin1, admin2" if "admin1" in columns
                      else "NULL AS country_code, NULL AS admin1, NULL AS admin2")
-            for name, kind, lat, lon, population, code, admin1, admin2 in con.execute(
-                    f"SELECT name, kind, latitude, longitude, population, {admin} FROM {source}").fetchall():
-                places.append(Place(name, kind, lat, lon, population, code, admin1, admin2))
+            populations = best_populations(con, country)
+            for place_id, name, kind, lat, lon, population, code, admin1, admin2 in con.execute(
+                    f"SELECT place_id, name, kind, latitude, longitude, population, {admin} FROM {source}").fetchall():
+                if kind in ("city", "town"):
+                    population = max(population or 0, populations.get((name.casefold(), round(lat), round(lon)), 0)) or None
+                places.append(Place(name, kind, lat, lon, population, code, admin1, admin2, place_id))
     finally:
         con.close()
     return GeoIndex(boundaries, places), sorted(v["id"] for v in boundary_versions + place_versions)
+
+
+def best_populations(con, country: str) -> dict[tuple[str, int, int], int]:
+    """Largest population any gazetteer gives a city or town, keyed by (name, rounded lat, rounded lon).
+
+    Gazetteers lag censuses unevenly (GeoNames has Islamabad at 601,600 while OSM has 1,009,832); cities only
+    grow, so the larger figure is the more recent one. Population sets how far a city reaches.
+    """
+    versions = repository.current_versions("silver.geo_places", {"country": country})
+    files = dataset_files("silver.geo_places", versions=versions)
+    if not files:
+        return {}
+    rows = con.execute(f"""
+        SELECT lower(name), latitude, longitude, population FROM {parquet_source(files)}
+        WHERE kind IN ('city', 'town') AND population > 0
+    """).fetchall()
+    best: dict[tuple[str, int, int], int] = {}
+    for name, lat, lon, population in rows:
+        for dlat in (-1, 0, 1):                      # neighbouring 1-degree cells: sources disagree by a few km
+            for dlon in (-1, 0, 1):
+                key = (name.casefold(), round(lat) + dlat, round(lon) + dlon)
+                best[key] = max(best.get(key, 0), int(population))
+    return best
+
+
+# ---------------------------------------------------------------- location precision
+
+# Providers geocode records they cannot place to a town or city centre (Overture stacks 1,700 Karachi listings on
+# one point; Google put 757 on Pakistan's centroid). Such points are kept but flagged, and their geography comes
+# from the city the provider states instead of from the point.
+STACKED_MIN_RECORDS = 10        # this many records of one source on the identical point (~1 m) = a geocoding default
+ON_PLACE_CENTRE_KM = 0.02       # a point this close to a gazetteer place centre, shared with another record
+
+
+def stacked_points_sql(table: str) -> str:
+    """`table` with stack_size: how many records of the same table sit on the identical point."""
+    return f"""
+        SELECT *, count(*) OVER (PARTITION BY round(latitude, 5), round(longitude, 5)) AS stack_size
+        FROM {table}
+    """
+
+
+def location_precision(stack_size: int | None, locality_distance_km: float | None) -> str:
+    stack = stack_size or 1
+    if stack >= STACKED_MIN_RECORDS:
+        return "approximate"
+    if stack >= 2 and locality_distance_km is not None and locality_distance_km <= ON_PLACE_CENTRE_KM:
+        return "approximate"
+    return "exact"
+
+
+def place_geography(geo: GeoIndex | None, geo_values: dict | None, index: int, *, precision: str,
+                    stated_city: str | None, stated_admin1: str | None = None) -> dict:
+    """admin1 / admin2 / city / city_id / locality for one record, honouring its location precision.
+
+    Exact points take the geography of the point. Approximate points take the city the provider states when the
+    gazetteer knows it; otherwise they keep the point's city only if a real city reaches the point (a city-centre
+    default), and are left without city and province when the point is merely the nearest village (a country
+    centroid).
+    """
+    if geo_values is None:
+        return {"admin1": stated_admin1, "admin2": None, "city": stated_city, "city_id": None,
+                "locality": None, "locality_distance_km": None}
+    point = {key: geo_values[key][index] for key in
+             ("admin1", "admin2", "city", "city_id", "locality", "locality_distance_km")}
+    if precision == "exact":
+        return point
+    stated = geo.city_by_name(stated_city) if geo else None
+    if stated:
+        return {"admin1": stated["admin1"], "admin2": stated["admin2"], "city": stated["city"],
+                "city_id": stated["city_id"], "locality": None, "locality_distance_km": None}
+    if geo_values["city_match"][index] in ("city", "territory"):
+        return {**point, "locality": None, "locality_distance_km": None}
+    return {"admin1": None, "admin2": None, "city": None, "city_id": None, "locality": None,
+            "locality_distance_km": None}

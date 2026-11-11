@@ -24,7 +24,8 @@ from ..engine.context import StageContext
 from ..errors import PermanentError
 from ..lake.reader import dataset_files, duck, parquet_source
 from ..lake.writer import DatasetVersionWriter, copy_query_into
-from ..normalize import name_key
+from ..categories import CATEGORIES, CATEGORY_VERSION, canonical_category, classify_label, is_generic_name
+from ..normalize import chain_name, clean_name, is_hotline, name_key, normalize_postal_code
 from ..resolution.service import er_fingerprint, er_input_ids, named_places_view
 from ..silver_contract import (
     DOMAIN_FACTS_SCHEMA,
@@ -60,6 +61,49 @@ ENRICHMENT_INPUTS = {"silver.organizations": ("orgrec", ORGANIZATIONS_SCHEMA),
                      "silver.domain_facts": ("domain_facts", DOMAIN_FACTS_SCHEMA)}
 # Tie-breaks between sources that state a domain fact the same way (same method); see domain_profiles.py.
 DOMAIN_FACT_SOURCE_PRIORITY = {**SOURCE_PRIORITY, "website": 70}
+# Sources that only list businesses: a record from them is a business even without a category or contact details.
+BUSINESS_ONLY_SOURCES = ("osm", "googlemaps", "geonames")
+# One number / email / website on this many businesses with this many different names is a shared line, not a
+# branch's own: kept for display, but not counted as that location's contact.
+SHARED_CONTACT_MIN_BUSINESSES = 5
+SHARED_CONTACT_MIN_NAMES = 3
+
+
+def industry_label(text: str | None) -> str | None:
+    """A stated industry ("Petroleum industry") as a label of the shared category list, or None."""
+    category = classify_label(text) if text else None
+    return category.label if category else None
+
+
+def register_functions(con, country: str) -> None:
+    """Python helpers the Gold SQL calls (names, categories, contacts)."""
+    def category_key(category, key, group, name, evidence):
+        result = canonical_category(category, key, group, name, bool(evidence))
+        return result[0] if result else None
+
+    functions = [
+        ("name_key", name_key, ["VARCHAR"], "VARCHAR"),
+        ("canonical_category", category_key, ["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "BOOLEAN"], "VARCHAR"),
+        ("display_name", lambda name, brand: clean_name(name, brand)[0], ["VARCHAR", "VARCHAR"], "VARCHAR"),
+        ("local_name", lambda name, brand: clean_name(name, brand)[1], ["VARCHAR", "VARCHAR"], "VARCHAR"),
+        ("chain_name", lambda name, city, locality: chain_name(name, (city, locality)),
+         ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR"),
+        ("is_generic_name", is_generic_name, ["VARCHAR"], "BOOLEAN"),
+        ("industry_label", industry_label, ["VARCHAR"], "VARCHAR"),
+        ("is_hotline", is_hotline, ["VARCHAR", "VARCHAR"], "BOOLEAN"),
+        ("postal_code", lambda code: normalize_postal_code(code, country), ["VARCHAR"], "VARCHAR"),
+    ]
+    for name, function, params, returns in functions:
+        try:
+            con.create_function(name, function, params, returns, null_handling="special")
+        except Exception:
+            pass                                  # registered already (named_places_view registers some)
+    con.register("category_list", pa.table({
+        "category_key": [c.key for c in CATEGORIES.values()],
+        "category_label": [c.label for c in CATEGORIES.values()],
+        "category_group_canonical": [c.group for c in CATEGORIES.values()],
+        "category_generic": [c.generic for c in CATEGORIES.values()],
+    }))
 
 
 def gold_id_for(anchor: str) -> str:
@@ -101,7 +145,7 @@ def build_gold(ctx: StageContext) -> StageResult:
     enrichment = {d: repository.current_versions(d, {"country": country}) for d in ENRICHMENT_INPUTS}
     _, geo_places = geography_versions(country)
     fingerprint = er_fingerprint(country)
-    versions = {"gold": GOLD_VERSION, "entity_resolution": er_state["algorithm"],
+    versions = {"gold": GOLD_VERSION, "categories": CATEGORY_VERSION, "entity_resolution": er_state["algorithm"],
                 "organization_linking": er_state.get("organization_algorithm"), "er_fingerprint": fingerprint}
     input_versions = [("silver.places", v) for v in silver] + [
         (d, v) for d, vs in enrichment.items() for v in vs] + [("silver.geo_places", v) for v in geo_places]
@@ -132,7 +176,7 @@ def build_gold(ctx: StageContext) -> StageResult:
         con.register("silver_versions", pa.table({
             "source": list(silver_version_by_source), "silver_version_id": list(silver_version_by_source.values()),
         }))
-        con.create_function("name_key", name_key, ["VARCHAR"], "VARCHAR", null_handling="special")
+        register_functions(con, country)
         for dataset_id, (view, schema) in ENRICHMENT_INPUTS.items():
             files = dataset_files(dataset_id, versions=enrichment[dataset_id])
             if files:
@@ -160,15 +204,26 @@ def build_gold(ctx: StageContext) -> StageResult:
                                  AS reviews
                       FROM places)
             ),
+            categorized AS (
+                SELECT r.*, canonical_category(category, category_key, category_group, name,
+                                               source IN {BUSINESS_ONLY_SOURCES} OR normalized_phone IS NOT NULL
+                                               OR (normalized_domain IS NOT NULL AND NOT coalesce(domain_is_platform, false))
+                                               OR email IS NOT NULL) AS canonical_key,
+                       coalesce(location_precision, 'exact') = 'exact' AS precise,
+                       postal_code(postal_code) AS valid_postal_code
+                FROM rated r
+            ),
             scored AS (
-                SELECT p.*, coalesce(c.anchor, p.silver_id) AS anchor,
+                SELECT p.*, l.category_label, l.category_group_canonical, coalesce(l.category_generic, true) AS category_generic,
+                       coalesce(c.anchor, p.silver_id) AS anchor,
                        coalesce(c.link_confidence, 1.0) AS link_confidence,
                        'gb_' || substr(sha256(coalesce(c.anchor, p.silver_id)), 1, 16) AS gold_id,
                        {priorities} * 10
                          + (normalized_domain IS NOT NULL AND NOT coalesce(domain_is_platform, false))::INT * 3
                          + (normalized_phone IS NOT NULL)::INT * 2 + (email IS NOT NULL)::INT
                          + (address IS NOT NULL)::INT AS rank_score
-                FROM rated p LEFT JOIN cluster_map c USING (silver_id)
+                FROM categorized p LEFT JOIN cluster_map c USING (silver_id)
+                LEFT JOIN category_list l ON l.category_key = p.canonical_key
             )
             SELECT *, row_number() OVER (PARTITION BY gold_id ORDER BY rank_score DESC, silver_id) AS member_rank
             FROM scored
@@ -186,18 +241,30 @@ def build_gold(ctx: StageContext) -> StageResult:
                     arg_max(tld, rank_score) FILTER (WHERE normalized_domain IS NOT NULL AND NOT domain_is_platform) AS tld,
                     arg_max(website, rank_score) FILTER (WHERE website IS NOT NULL) AS website_any,
                     arg_max(normalized_phone, rank_score) FILTER (WHERE normalized_phone IS NOT NULL) AS phone,
-                    arg_max(email, rank_score) FILTER (WHERE email IS NOT NULL) AS email,
-                    arg_max(address, rank_score) FILTER (WHERE address IS NOT NULL) AS address,
-                    arg_max(postal_code, rank_score) FILTER (WHERE postal_code IS NOT NULL) AS postal_code,
-                    arg_max(brand_name, rank_score) FILTER (WHERE brand_name IS NOT NULL) AS brand_name,
+                    arg_max(email, rank_score) FILTER (WHERE nullif(trim(email), '') IS NOT NULL) AS email,
+                    arg_max(address, rank_score) FILTER (WHERE nullif(trim(address), '') IS NOT NULL) AS address,
+                    arg_max(valid_postal_code, rank_score) FILTER (WHERE valid_postal_code IS NOT NULL) AS postal_code,
+                    arg_max(opening_hours, rank_score) FILTER (WHERE nullif(trim(opening_hours), '') IS NOT NULL) AS opening_hours,
+                    -- Position (and the geography read from it) from the best member placed exactly; a provider's
+                    -- town-centre default is used only when no member knows better.
+                    arg_max({{'latitude': latitude, 'longitude': longitude, 'admin1': admin1, 'admin2': admin2,
+                              'city': city, 'city_id': city_id, 'locality': locality}},
+                            precise::INT * 1000000 + rank_score) AS placed,
+                    bool_or(precise) AS any_precise,
+                    -- The most specific category any member gives (a source's "Shop" yields to another's "Pharmacy").
+                    arg_max({{'key': canonical_key, 'label': category_label, 'group': category_group_canonical}},
+                            (NOT category_generic)::INT * 1000000 + rank_score)
+                        FILTER (WHERE canonical_key IS NOT NULL) AS canonical,
+                    arg_max(website, rank_score) FILTER (WHERE website IS NOT NULL AND domain_is_platform) AS social_url,
+                    arg_max(brand_name, rank_score) FILTER (WHERE nullif(trim(brand_name), '') IS NOT NULL) AS brand_name,
                     arg_max(brand_wikidata, rank_score) FILTER (WHERE brand_wikidata IS NOT NULL) AS brand_wikidata,
                     arg_max(trim(split_part(wikidata, ';', 1)), rank_score) FILTER (WHERE wikidata IS NOT NULL)
                         AS wikidata_own,
                     arg_max(source, rank_score) FILTER (WHERE normalized_domain IS NOT NULL AND NOT domain_is_platform)
                         AS website_source,
                     arg_max(source, rank_score) FILTER (WHERE normalized_phone IS NOT NULL) AS phone_source,
-                    arg_max(source, rank_score) FILTER (WHERE email IS NOT NULL) AS email_source,
-                    arg_max(source, rank_score) FILTER (WHERE address IS NOT NULL) AS address_source,
+                    arg_max(source, rank_score) FILTER (WHERE nullif(trim(email), '') IS NOT NULL) AS email_source,
+                    arg_max(source, rank_score) FILTER (WHERE nullif(trim(address), '') IS NOT NULL) AS address_source,
                     -- The rating backed by the most reviews, kept together with its review count and source.
                     arg_max({{'rating': rating, 'reviews': review_count, 'source': source}},
                             coalesce(review_count, 0)::BIGINT * 10000 + rank_score) FILTER (WHERE rating IS NOT NULL)
@@ -214,19 +281,28 @@ def build_gold(ctx: StageContext) -> StageResult:
                     ], x -> x IS NOT NULL) AS conflicts
                 FROM members GROUP BY gold_id
             )
-            SELECT p.gold_id, p.name, p.normalized_name, p.entity_type, p.category_group, p.category,
+            SELECT p.gold_id, display_name(p.name, coalesce(p.brand_name, m.brand_name)) AS name, p.normalized_name,
+                   p.entity_type, m.canonical.group AS category_group, m.canonical.key AS category,
+                   m.canonical.label AS category_label, p.category AS subcategory, p.name AS original_name,
+                   local_name(p.name, coalesce(p.brand_name, m.brand_name)) AS name_local,
+                   is_generic_name(p.name) AS generic_name,
                    -- Gold rows belong to their partition. Silver keeps NULL for places outside every known
                    -- boundary (reported on the quality dashboard); Gold attributes them to the extract's country.
-                   '{country}' AS country_code, p.admin1, p.admin2, p.city, p.locality, m.postal_code, m.address,
-                   p.latitude, p.longitude, coalesce(m.website_own, m.website_any) AS website, m.domain, m.tld,
-                   m.phone, m.email, m.brand_name, m.brand_wikidata,
+                   '{country}' AS country_code, m.placed.admin1 AS admin1, m.placed.admin2 AS admin2,
+                   m.placed.city AS city, m.placed.city_id AS city_id, m.placed.locality AS locality,
+                   m.postal_code, m.address,
+                   m.placed.latitude AS latitude, m.placed.longitude AS longitude,
+                   CASE WHEN m.any_precise THEN 'exact' ELSE 'approximate' END AS location_precision,
+                   m.website_own AS website, m.social_url, CAST(NULL AS VARCHAR) AS website_kind, m.domain, m.tld,
+                   m.phone, CAST(NULL AS VARCHAR) AS phone_kind, m.email, FALSE AS email_shared,
+                   m.brand_name, m.brand_wikidata, m.opening_hours,
                    m.rated.rating AS rating, m.rated.reviews AS review_count,
                    CAST(NULL AS VARCHAR) AS organization_id,
                    m.sources, len(m.sources)::SMALLINT AS source_count, m.member_count::INTEGER AS member_count,
-                   coalesce(m.website_own, m.website_any) IS NOT NULL AS has_website,
+                   m.website_own IS NOT NULL AS has_website,
                    m.phone IS NOT NULL AS has_phone, m.email IS NOT NULL AS has_email,
                    m.address IS NOT NULL AS has_address,
-                   (25 * ((coalesce(m.website_own, m.website_any) IS NOT NULL)::INT + (m.phone IS NOT NULL)::INT
+                   (25 * ((m.website_own IS NOT NULL)::INT + (m.phone IS NOT NULL)::INT
                          + (m.email IS NOT NULL)::INT + (m.address IS NOT NULL)::INT))::SMALLINT AS completeness,
                    m.conflicts, m.source_updated_at,
                    -- Which source supplied each attribute (field-level provenance).
@@ -240,7 +316,9 @@ def build_gold(ctx: StageContext) -> StageResult:
                    m.wikidata_own AS wikidata_id, []::VARCHAR[] AS enriched_by
             FROM primary_member p JOIN merged m USING (gold_id)
             WHERE m.confidence >= {MIN_GOLD_CONFIDENCE}
+              AND m.canonical IS NOT NULL               -- no member is a business (a library, a peak, a village)
         """)
+        classify_contacts(con, country)
         ctx.progress(0, None, "records", "linking organizations", force=True)
         org_stats = organizations.cluster_records(con, organizations.load_organization_links(country))
         organizations.assign_business_organizations(con)
@@ -278,6 +356,7 @@ def build_gold(ctx: StageContext) -> StageResult:
         con.execute(f"CREATE TEMP TABLE gold_domains AS {domains_sql(country)}")
         write("gold.domains", "SELECT * FROM gold_domains")
         con.execute(geo_places_view(geo_places))
+        con.execute(geo_population_view(country))
         write("gold.cities", cities_sql(country))
         ctx.progress(0, None, "records", "merging domain profiles", force=True)
         con.register("domain_profiles_out", domain_profiles.build_table(con, country, DOMAIN_FACT_SOURCE_PRIORITY))
@@ -296,6 +375,33 @@ def build_gold(ctx: StageContext) -> StageResult:
                  "domain_profiles": written["gold.domain_profiles"]["row_count"],
                  **org_stats, "er_fingerprint": fingerprint},
     )
+
+
+def classify_contacts(con, country: str) -> None:
+    """Mark contacts that belong to a head office or a directory rather than to the location itself.
+
+    phone_kind: hotline (UAN / toll-free by numbering pattern), shared (one number on many differently named
+    listings), direct. website_kind: shared (a chain's or a portal's site used by many locations), own.
+    email_shared: one address on many differently named listings.
+    """
+    many = f"count(*) >= {SHARED_CONTACT_MIN_BUSINESSES} AND count(DISTINCT name_key(name)) >= {SHARED_CONTACT_MIN_NAMES}"
+    con.execute(f"""
+        UPDATE businesses SET phone_kind = CASE WHEN is_hotline(phone, '{country}') THEN 'hotline'
+                                                WHEN phone IN (SELECT phone FROM businesses WHERE phone IS NOT NULL
+                                                               GROUP BY phone HAVING {many}) THEN 'shared'
+                                                ELSE 'direct' END
+        WHERE phone IS NOT NULL
+    """)
+    con.execute(f"""
+        UPDATE businesses SET website_kind = CASE WHEN domain IN (SELECT domain FROM businesses WHERE domain IS NOT NULL
+                                                                  GROUP BY domain HAVING count(*) >= {SHARED_CONTACT_MIN_BUSINESSES})
+                                                  THEN 'shared' ELSE 'own' END
+        WHERE website IS NOT NULL
+    """)
+    con.execute(f"""
+        UPDATE businesses SET email_shared = TRUE
+        WHERE email IN (SELECT email FROM businesses WHERE email IS NOT NULL GROUP BY email HAVING {many})
+    """)
 
 
 def domains_sql(country: str) -> str:
@@ -331,6 +437,21 @@ def domains_sql(country: str) -> str:
     """
 
 
+def geo_population_view(country: str) -> str:
+    """Largest population any gazetteer gives each city or town (by name and ~1 degree cell), like the Silver geography."""
+    versions = repository.current_versions("silver.geo_places", {"country": country})
+    files = dataset_files("silver.geo_places", versions=versions)
+    if not files:
+        return "CREATE OR REPLACE TEMP VIEW geo_population AS SELECT NULL::VARCHAR AS name, NULL::INTEGER AS cell_lat, NULL::INTEGER AS cell_lon, NULL::BIGINT AS population WHERE false"
+    return f"""
+        CREATE OR REPLACE TEMP VIEW geo_population AS
+        SELECT lower(name) AS name, round(latitude)::INTEGER AS cell_lat, round(longitude)::INTEGER AS cell_lon,
+               max(population) AS population
+        FROM {parquet_source(files)} WHERE kind IN ('city', 'town') AND population > 0
+        GROUP BY ALL
+    """
+
+
 def geo_places_view(geo_places: list[dict]) -> str:
     """The preferred gazetteer's places, with gazetteer columns present even for sources that lack them."""
     files = dataset_files("silver.geo_places", versions=geo_places)
@@ -358,28 +479,35 @@ def _optional_columns(files: list[str], names: tuple[str, ...]) -> str:
 
 
 def cities_sql(country: str) -> str:
-    """Cities and towns with business coverage. Same-named places: counts go to the most populous one."""
+    """Cities and towns with business coverage, counted by gazetteer id (two villages called Islamabad stay apart).
+
+    Population is the largest any gazetteer gives the place; the province is the one its businesses lie in by
+    boundary polygon (consistent with the businesses' own), else the gazetteer's.
+    """
     return f"""
         WITH counts AS (
-            SELECT city AS name, count(*)::INTEGER AS business_count,
+            SELECT city_id, count(*)::INTEGER AS business_count,
                    count(*) FILTER (WHERE has_website)::INTEGER AS with_website,
                    count(*) FILTER (WHERE has_phone)::INTEGER AS with_phone,
                    count(DISTINCT organization_id)::INTEGER AS organizations,
                    mode(category_group) AS top_category_group, mode(admin1) AS admin1
-            FROM businesses WHERE city IS NOT NULL GROUP BY city
+            FROM businesses WHERE city_id IS NOT NULL GROUP BY city_id
         ),
-        ranked AS (
-            SELECT *, row_number() OVER (PARTITION BY name ORDER BY coalesce(population, 0) DESC,
-                                         CASE kind WHEN 'city' THEN 0 WHEN 'town' THEN 1 ELSE 2 END, place_id) AS rn
-            FROM geo_places
+        places AS (
+            SELECT g.*, greatest(coalesce(g.population, 0), coalesce(p.population, 0)) AS best_population
+            FROM geo_places g
+            LEFT JOIN geo_population p ON p.name = lower(g.name) AND g.kind IN ('city', 'town')
+             AND abs(p.cell_lat - round(g.latitude)) <= 1 AND abs(p.cell_lon - round(g.longitude)) <= 1
+            QUALIFY row_number() OVER (PARTITION BY g.place_id ORDER BY p.population DESC NULLS LAST) = 1
         )
         SELECT r.place_id AS city_id, '{country}' AS country_code, r.name, r.name_local, r.kind,
-               coalesce(c.admin1, r.admin1) AS admin1, r.admin2, r.latitude, r.longitude, r.population,
+               coalesce(c.admin1, r.admin1) AS admin1, r.admin2, r.latitude, r.longitude,
+               nullif(r.best_population, 0) AS population,
                coalesce(c.business_count, 0) AS business_count, coalesce(c.with_website, 0) AS with_website,
                coalesce(c.with_phone, 0) AS with_phone, coalesce(c.organizations, 0) AS organizations,
-               CASE WHEN r.population > 0 AND c.business_count > 0
-                    THEN round(10000.0 * c.business_count / r.population, 2) END AS businesses_per_10k,
+               CASE WHEN r.best_population > 0 AND c.business_count > 0
+                    THEN round(10000.0 * c.business_count / r.best_population, 2) END AS businesses_per_10k,
                c.top_category_group, r.source
-        FROM ranked r LEFT JOIN counts c ON c.name = r.name AND r.rn = 1
-        WHERE r.kind IN ('city', 'town') OR (r.rn = 1 AND c.business_count > 0)
+        FROM places r LEFT JOIN counts c ON c.city_id = r.place_id
+        WHERE r.kind IN ('city', 'town') OR c.business_count > 0
     """

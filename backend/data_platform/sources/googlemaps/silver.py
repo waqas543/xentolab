@@ -5,6 +5,11 @@ place (same place id, else CID, else feature id) fold into one row; each field t
 (order: artifact, then line). The shared normalizers, taxonomy and geography are then applied as for every other
 places source. Permanently closed places, records without an id and unusable coordinates go to silver.rejects;
 places that are not businesses (mosques, parks, police) are dropped by the taxonomy.
+
+Searches by town return businesses from other countries too (a "travel agency" search finds Dubai and Mumbai
+agencies); a place outside every boundary of the searched country is rejected as `outside_country`. Points
+where many listings stack up are Google's town defaults: they are flagged approximate and take the town the
+search was made for.
 """
 
 from __future__ import annotations
@@ -18,8 +23,23 @@ import pyarrow as pa
 from ...engine.context import StageContext
 from ...lake.reader import dataset_files, duck, parquet_source
 from ...lake.writer import DatasetVersionWriter
-from ...normalize import name_key, normalize_name, normalize_phone, normalize_website, valid_coordinates
-from ...silver_contract import PLACES_SCHEMA, REJECTS_SCHEMA, empty_columns, load_geo_index
+from ...normalize import (
+    name_key,
+    normalize_name,
+    normalize_phone,
+    normalize_website,
+    parse_google_hours,
+    valid_coordinates,
+)
+from ...silver_contract import (
+    PLACES_SCHEMA,
+    REJECTS_SCHEMA,
+    empty_columns,
+    load_geo_index,
+    location_precision,
+    place_geography,
+    stacked_points_sql,
+)
 from ...taxonomy import classify_googlemaps
 
 SOURCE = "googlemaps"
@@ -119,12 +139,18 @@ def normalize_batch(rows: list[dict], *, geo, scope_country: str, context: dict)
 
     for index, (row, (category_key, category, group, entity_type), attributes) in enumerate(kept):
         country_code = geo_values["country_code"][index] if geo_values else scope_country
-        if country_code and country_code.upper() != scope_country:
+        if country_code is None or country_code.upper() != scope_country:
+            # Outside every boundary of the searched country (or inside another one): a foreign search result.
             stats["outside_country"] += 1
+            _reject(rejects, "outside_country", row["place_key"], row["name"], row["latitude"], row["longitude"],
+                    attributes, row["artifact_id"], context)
             continue
         name = (row["name"] or "").strip() or None
         url, domain, tld, is_platform = normalize_website(row["website"] or row["domain"])
-        hours = (row["hours"] or "").strip().lower()
+        precision = location_precision(row.get("stack_size"),
+                                       geo_values["locality_distance_km"][index] if geo_values else None)
+        geography = place_geography(geo, geo_values, index, precision=precision, stated_city=row["search_city"],
+                                    stated_admin1=row["search_province"])
         values = {
             "silver_id": f"{SOURCE}:{row['place_key']}",
             "source": SOURCE,
@@ -145,11 +171,13 @@ def normalize_batch(rows: list[dict], *, geo, scope_country: str, context: dict)
             "operator": None,
             "wikidata": None,
             "country_code": country_code.upper() if country_code else None,
-            "admin1": geo_values["admin1"][index] if geo_values else row["search_province"],
-            "admin2": geo_values["admin2"][index] if geo_values else None,
-            "city": (geo_values["city"][index] if geo_values else None) or row["search_city"],
-            "locality": (geo_values["locality"][index] if geo_values else None) or row["search_area"],
-            "locality_distance_km": geo_values["locality_distance_km"][index] if geo_values else None,
+            "admin1": geography["admin1"],
+            "admin2": geography["admin2"],
+            "city": geography["city"] or (row["search_city"] if precision == "exact" else None),
+            "city_id": geography["city_id"],
+            "locality": geography["locality"] or (row["search_area"] if precision == "exact" else None),
+            "locality_distance_km": geography["locality_distance_km"],
+            "location_precision": precision,
             "postal_code": None,
             "street": None,
             "housenumber": None,
@@ -164,7 +192,7 @@ def normalize_batch(rows: list[dict], *, geo, scope_country: str, context: dict)
             "normalized_phone": normalize_phone(row["phone"], country_code or scope_country),
             "email": None,
             "social_links": None,
-            "opening_hours": "24/7" if hours == "open 24 hours" else None,
+            "opening_hours": parse_google_hours(row["hours"]),
             # Sponsored listings are adverts placed by the business itself: real, but less certain to be local.
             "source_confidence": 0.8 if row["sponsored_only"] else 0.9,
             "source_updated_at": row["last_seen_at"],
@@ -197,7 +225,7 @@ def transform(ctx: StageContext, bronze: list[dict], scope_country: str,
     try:
         source = parquet_source(dataset_files("bronze.google_places", versions=bronze))
         totals["observations"] = con.execute(f"SELECT count(*) FROM {source}").fetchone()[0]
-        con.execute(f"CREATE TEMP TABLE merged AS {merge_sql(source)}")
+        con.execute(f"CREATE TEMP TABLE merged AS {stacked_points_sql(f'({merge_sql(source)})')}")
         totals["unique_places"] = con.execute("SELECT count(*) FROM merged").fetchone()[0]
         unidentified = con.execute(unidentified_sql(source)).fetchall()
         reader = con.execute("SELECT * FROM merged ORDER BY place_key").to_arrow_reader(BATCH_ROWS)

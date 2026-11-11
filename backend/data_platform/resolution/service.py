@@ -13,6 +13,8 @@ from .. import db, repository
 from ..engine.context import StageContext
 from ..lake.reader import dataset_files, duck, parquet_source
 from ..sources.base import StageResult
+from ..categories import is_generic_name
+from ..normalize import clean_name, is_hotline, name_key
 from .algorithms import ALGORITHMS, ORGANIZATION_LINKING
 
 MATCH_COLUMNS = ["left_id", "right_id", "match_score", "name_score", "domain_score", "address_score", "geo_score",
@@ -43,7 +45,21 @@ def er_fingerprint(country: str) -> str:
     return hashlib.sha256(json.dumps(row, default=str).encode()).hexdigest()[:16]
 
 
+def register_functions(con) -> None:
+    """Python helpers the matching SQL calls."""
+    for name, function, params, returns in (
+            ("is_hotline", is_hotline, ["VARCHAR", "VARCHAR"], "BOOLEAN"),
+            ("is_generic_name", is_generic_name, ["VARCHAR"], "BOOLEAN"),
+            ("name_key", name_key, ["VARCHAR"], "VARCHAR"),
+            ("display_name", lambda n, brand: clean_name(n, brand)[0], ["VARCHAR", "VARCHAR"], "VARCHAR")):
+        try:
+            con.create_function(name, function, params, returns, null_handling="special")
+        except Exception:                      # already registered on this connection
+            pass
+
+
 def named_places_view(con, files: list[str], country: str) -> None:
+    register_functions(con)
     con.execute(f"""
         CREATE OR REPLACE VIEW places AS
         SELECT * FROM {parquet_source(files)}

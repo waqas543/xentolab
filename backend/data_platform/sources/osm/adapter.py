@@ -14,7 +14,7 @@ from ...lake.reader import dataset_files, duck, parquet_source
 from ...normalize import NORMALIZER_VERSION
 from ...observability import get_logger
 from ...quality.checks import RecordCountCheck, SchemaCheck, UniqueCheck
-from ...silver_contract import geography_version_ids
+from ...silver_contract import CONTRACT_VERSION, geography_version_ids
 from ...storage import sha256_file
 from ...taxonomy import TAXONOMY_VERSION
 from ..base import DataSourceAdapter, DiscoveredDataset, PipelineSpec, SourceCapabilities, StageResult
@@ -58,7 +58,7 @@ class OSMAdapter(DataSourceAdapter):
                                       provides_geography=True)
     parser_version = "osm-bronze-1"
     # 3: places use the shared geography (GeoNames gazetteer when loaded)
-    transformation_version = f"osm-silver-3+{NORMALIZER_VERSION}+{TAXONOMY_VERSION}"
+    transformation_version = f"osm-silver-4+{NORMALIZER_VERSION}+{TAXONOMY_VERSION}+{CONTRACT_VERSION}"
 
     # -- declaration -------------------------------------------------------------------
 

@@ -39,3 +39,43 @@ export function monthYear(iso: string | null | undefined): string | null {
 export function places(n: number): string {
   return `${compact(n)} ${n === 1 ? 'place' : 'places'}`;
 }
+
+/** 42.2 -> "42%", 3.8 -> "3.8%", null -> "–" */
+export function pct(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '–';
+  return `${value >= 10 || Number.isInteger(value) ? Math.round(value) : value.toFixed(1)}%`;
+}
+
+/** 4.37 -> "4.4" */
+export function stars(value: number | null | undefined): string {
+  return value === null || value === undefined ? '–' : value.toFixed(1);
+}
+
+/** 1.77 -> "1.8× usual" */
+export function times(index: number | null | undefined): string {
+  if (index === null || index === undefined) return '–';
+  return `${index >= 10 ? Math.round(index) : index.toFixed(1)}× usual`;
+}
+
+/** "1st", "2nd", "23rd" */
+export function ordinal(n: number): string {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th';
+  return `${n}${suffix}`;
+}
+
+const UNCOUNTABLE = /(ing|ware|ics|estate|media|education|agriculture|tuition|signage|insurance|tax|trade|business|care|aid|food|equipment)$/;
+
+/**
+ * A category label as a plural noun for sentences: "Pharmacy" -> "pharmacies", "Fuel station" -> "fuel stations",
+ * "IT & software" -> "IT & software businesses". Acronyms keep their case.
+ */
+export function categoryNoun(label: string | null | undefined, many = true): string {
+  if (!label) return many ? 'places' : 'place';
+  const lower = label.split(' ').map((w) => (/^[A-Z]{2,}$/.test(w) ? w : w.toLowerCase())).join(' ');
+  if (!many) return lower;
+  if (/ & | and |\//.test(lower) || UNCOUNTABLE.test(lower) || lower.endsWith('s')) return `${lower} businesses`;
+  if (/[^aeiou]y$/.test(lower)) return `${lower.slice(0, -1)}ies`;
+  if (/(s|x|z|ch|sh)$/.test(lower)) return `${lower}es`;
+  return `${lower}s`;
+}

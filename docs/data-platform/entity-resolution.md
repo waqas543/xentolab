@@ -56,6 +56,18 @@ and the same restaurant (same phone, 2 m apart), are linked automatically.
 community-curated, while Overture's places come largely from social-media pages. Contact fields missing on the
 primary record are filled from the other source, and `field_sources` records which source supplied each one.
 
+## Algorithm v2 (version `er-v2`, the default)
+
+v2 keeps v1's blocks and scores, and fixes what v1 got wrong on real data:
+
+| Case | v1 | v2 |
+|---|---|---|
+| Same name, 0–50 m apart, different phones (businesses list several numbers) | suggested | automatic, unless the name is generic ("Brick Kiln", "Medical Store") or their own websites differ |
+| Head-office / toll-free numbers (UAN `111…`, `0800…`) or one number on 3+ different names | blocking key and evidence | ignored: says nothing about the branch |
+| Same direct phone, one name contains the other ("Meezan Bank" / "Meezan Bank Gulberg") | suggested below Jaro-Winkler 0.85 | automatic within 150 m |
+| Same brand Wikidata id within 60 m, any script ("Shell" / "شیل") | not compared | automatic |
+| A record on an approximate point (a provider's town-centre default) | compared by distance, so never matched | compared within its city by name; automatic only with phone or website agreement |
+
 ## Reversibility
 
 - Matches are rows with `status` (`suggested`, `accepted`, `rejected`, `automatic`), scores, `evidence` (blocks,

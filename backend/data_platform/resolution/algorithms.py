@@ -101,7 +101,147 @@ class ResolutionV1:
         """
 
 
-ALGORITHMS = {"v1": ResolutionV1()}
+@dataclass(frozen=True)
+class ResolutionV2(ResolutionV1):
+    """v2: what v1 missed or got wrong on real data.
+
+    - Businesses list several numbers, so two same-name records 0-50 m apart are one place even when their phones
+      differ ("Pet Village Animal Hospital" +92310... / +92318..., 0 m) - unless the name is generic ("Brick Kiln",
+      "Medical Store": neighbouring kilns are different kilns) or their own websites disagree.
+    - A head-office or toll-free number (UAN 111..., 0800..., or one number on many differently named listings) says
+      nothing about which branch a record is: it is neither a blocking key nor evidence.
+    - A shared direct number plus a name that contains the other ("Meezan Bank" / "Meezan Bank Gulberg") is one place.
+    - The same brand (Wikidata id) within 60 m is one place, whatever script the name is in ("Shell" / "شیل").
+    - Records on an approximate point (a provider's town-centre default) cannot be compared by distance: they match
+      a record in the same city only on name plus phone or website.
+    """
+
+    version: str = "er-v2.1"     # 2.1: keys from display names; exact names bypass the score floor
+    shared_phone_min_names: int = 3       # one number on this many different names = a shared line
+    exact_name_max_m: float = 50.0
+    brand_max_m: float = 60.0
+
+    def candidates_sql(self, places: str) -> str:
+        cell = self.fuzzy_cell_degrees
+        haversine = """2 * 6371008.8 * asin(sqrt(
+            pow(sin(radians(b.latitude - a.latitude) / 2), 2) +
+            cos(radians(a.latitude)) * cos(radians(b.latitude)) * pow(sin(radians(b.longitude - a.longitude) / 2), 2)))"""
+        near = "abs(a.latitude - b.latitude) < 0.01 AND abs(a.longitude - b.longitude) < 0.012"
+        both_exact = "a.precise AND b.precise"
+        return f"""
+        WITH raw AS (
+            -- The key of the display name: "شیل" tagged brand Shell and "KFC | E11 Islamabad" key as shell / kfc.
+            SELECT silver_id, coalesce(name_key(display_name(name, brand_name)), name_key) AS name_key, normalized_phone, normalized_domain, domain_is_platform, street, housenumber,
+                   category_group, latitude, longitude, city_id, country_code,
+                   trim(split_part(coalesce(brand_wikidata, ''), ';', 1)) AS brand_qid,
+                   coalesce(location_precision, 'exact') = 'exact' AS precise,
+                   is_generic_name(name) AS generic_name
+            FROM {places}
+        ),
+        shared_phones AS (
+            SELECT normalized_phone FROM raw WHERE normalized_phone IS NOT NULL
+            GROUP BY normalized_phone HAVING count(DISTINCT name_key) >= {self.shared_phone_min_names}
+        ),
+        p AS (
+            SELECT r.* EXCLUDE (normalized_phone),
+                   CASE WHEN s.normalized_phone IS NULL AND NOT is_hotline(r.normalized_phone, r.country_code)
+                        THEN r.normalized_phone END AS normalized_phone,
+                   CAST(floor(latitude / {cell}) AS BIGINT) AS cy, CAST(floor(longitude / {cell}) AS BIGINT) AS cx
+            FROM raw r LEFT JOIN shared_phones s USING (normalized_phone)
+        ),
+        neighbours AS (
+            SELECT p.*, cy + dy AS ny, cx + dx AS nx
+            FROM p, (SELECT unnest([-1, 0, 1]) AS dy), (SELECT unnest([-1, 0, 1]) AS dx)
+        ),
+        pairs AS (
+            SELECT a.silver_id AS l, b.silver_id AS r, 'name' AS block
+            FROM p a JOIN p b ON a.name_key = b.name_key AND a.silver_id < b.silver_id AND {near}
+            UNION
+            SELECT a.silver_id, b.silver_id, 'phone'
+            FROM p a JOIN p b ON a.normalized_phone = b.normalized_phone AND a.silver_id < b.silver_id AND {near}
+            UNION
+            SELECT a.silver_id, b.silver_id, 'domain'
+            FROM p a JOIN p b ON a.normalized_domain = b.normalized_domain AND a.silver_id < b.silver_id AND {near}
+             AND NOT coalesce(a.domain_is_platform, false)
+            UNION
+            SELECT a.silver_id, b.silver_id, 'brand'
+            FROM p a JOIN p b ON a.brand_qid = b.brand_qid AND a.brand_qid <> '' AND a.silver_id < b.silver_id
+             AND {near} AND {both_exact}
+            UNION
+            SELECT a.silver_id, b.silver_id, 'fuzzy'
+            FROM neighbours a JOIN p b ON a.ny = b.cy AND a.nx = b.cx AND a.silver_id < b.silver_id
+            WHERE jaro_winkler_similarity(a.name_key, b.name_key) >= 0.88
+            UNION
+            -- An approximate point is compared within its city, by name.
+            SELECT a.silver_id, b.silver_id, 'approximate'
+            FROM p a JOIN p b ON a.name_key = b.name_key AND a.city_id = b.city_id AND a.silver_id < b.silver_id
+            WHERE NOT ({both_exact}) AND NOT a.generic_name
+        ),
+        unique_pairs AS (
+            SELECT l, r, list(DISTINCT block ORDER BY block) AS blocks FROM pairs GROUP BY l, r
+        ),
+        scored AS (
+            SELECT u.l AS left_id, u.r AS right_id, u.blocks,
+                   {haversine} AS distance_m,
+                   {both_exact} AS comparable,
+                   a.generic_name OR b.generic_name AS generic_name,
+                   a.brand_qid <> '' AND a.brand_qid = b.brand_qid AS same_brand,
+                   jaro_winkler_similarity(a.name_key, b.name_key) AS name_score,
+                   length(a.name_key) >= 4 AND length(b.name_key) >= 4
+                       AND (contains(a.name_key, b.name_key) OR contains(b.name_key, a.name_key)) AS name_contained,
+                   CASE WHEN a.normalized_phone IS NULL OR b.normalized_phone IS NULL THEN NULL
+                        WHEN a.normalized_phone = b.normalized_phone THEN 1.0 ELSE 0.0 END AS phone_score,
+                   CASE WHEN a.normalized_domain IS NULL OR b.normalized_domain IS NULL
+                             OR coalesce(a.domain_is_platform, false) OR coalesce(b.domain_is_platform, false) THEN NULL
+                        WHEN a.normalized_domain = b.normalized_domain THEN 1.0 ELSE 0.0 END AS domain_score,
+                   CASE WHEN a.street IS NULL OR b.street IS NULL THEN NULL
+                        WHEN lower(a.street) = lower(b.street)
+                             AND coalesce(a.housenumber, '') = coalesce(b.housenumber, '') THEN 1.0 ELSE 0.0 END
+                        AS address_score,
+                   a.category_group AS left_group, b.category_group AS right_group
+            FROM unique_pairs u JOIN p a ON a.silver_id = u.l JOIN p b ON b.silver_id = u.r
+        ),
+        weighted AS (
+            SELECT *, CASE WHEN comparable THEN greatest(0.0, 1.0 - distance_m / {self.max_distance_m}) END AS geo_score
+            FROM scored
+            WHERE NOT comparable OR distance_m <= {self.max_distance_m}
+        ),
+        combined AS (
+            SELECT *,
+                (  {WEIGHTS['name']} * name_score + {WEIGHTS['geo']} * coalesce(geo_score, 0)
+                 + {WEIGHTS['phone']} * coalesce(phone_score, 0) + {WEIGHTS['domain']} * coalesce(domain_score, 0)
+                 + {WEIGHTS['address']} * coalesce(address_score, 0))
+                / ({WEIGHTS['name']} + CASE WHEN geo_score IS NULL THEN 0 ELSE {WEIGHTS['geo']} END
+                   + CASE WHEN phone_score IS NULL THEN 0 ELSE {WEIGHTS['phone']} END
+                   + CASE WHEN domain_score IS NULL THEN 0 ELSE {WEIGHTS['domain']} END
+                   + CASE WHEN address_score IS NULL THEN 0 ELSE {WEIGHTS['address']} END)
+                * CASE WHEN left_group = right_group THEN 1.0 ELSE 0.85 END AS match_score
+            FROM weighted
+        )
+        SELECT * EXCLUDE (comparable, generic_name, same_brand, name_contained),
+            CASE
+                WHEN NOT comparable THEN
+                    CASE WHEN name_score >= 0.92 AND (phone_score = 1 OR domain_score = 1) THEN 'automatic'
+                         ELSE 'suggested' END
+                WHEN same_brand AND distance_m <= {self.brand_max_m} AND coalesce(domain_score, 1) > 0 THEN 'automatic'
+                WHEN domain_score = 0 AND coalesce(phone_score, 0) < 1
+                    THEN 'suggested'                             -- different own websites, nothing else shared
+                WHEN name_score >= 0.97 AND distance_m <= {self.exact_name_max_m} AND NOT generic_name THEN 'automatic'
+                WHEN name_score >= 0.95 AND distance_m <= 75 AND coalesce(phone_score, 1) > 0 AND NOT generic_name
+                    THEN 'automatic'
+                WHEN phone_score = 1 AND (name_score >= 0.85 OR name_contained) AND distance_m <= 150 THEN 'automatic'
+                WHEN domain_score = 1 AND name_score >= 0.85 AND distance_m <= 150 THEN 'automatic'
+                ELSE 'suggested'
+            END AS decision
+        FROM combined
+        WHERE match_score >= {self.suggest_threshold} OR (same_brand AND distance_m <= {self.brand_max_m})
+           -- Sources file the same shop under different groups, which lowers the score; an exact name this close
+           -- is decided by the rules above, not by the score floor.
+           OR (comparable AND name_score >= 0.97 AND distance_m <= {self.exact_name_max_m} AND NOT generic_name)
+        """
+
+
+ALGORITHMS = {"v1": ResolutionV1(), "v2": ResolutionV2()}
 
 
 @dataclass(frozen=True)

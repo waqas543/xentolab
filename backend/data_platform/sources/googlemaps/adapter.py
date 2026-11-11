@@ -125,7 +125,7 @@ class GoogleMapsAdapter(DataSourceAdapter):
     capabilities = SourceCapabilities(supports_download=True, provides_places=True)
     bronze_accumulates = True          # each artifact holds only records no earlier run stored
     parser_version = "googlemaps-bronze-1"
-    transformation_version = (f"googlemaps-silver-1+{NORMALIZER_VERSION}+{GOOGLE_TAXONOMY_VERSION}"
+    transformation_version = (f"googlemaps-silver-2+{NORMALIZER_VERSION}+{GOOGLE_TAXONOMY_VERSION}"
                               f"+{CONTRACT_VERSION}")
 
     # -- declaration -------------------------------------------------------------------

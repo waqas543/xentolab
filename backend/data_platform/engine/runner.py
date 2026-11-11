@@ -70,7 +70,7 @@ def execute_run(run: dict) -> RunStatus:
         log.info("run started", pipeline=run["pipeline_definition_id"])
         # Record the code versions this worker actually executes with (the API may run newer or older code).
         executing = {"parser": adapter.parser_version, "transformation": adapter.transformation_version,
-                     "entity_resolution": run["parameters"].get("er_algorithm", "v1"), "gold": GOLD_VERSION}
+                     "entity_resolution": run["parameters"].get("er_algorithm", "v2"), "gold": GOLD_VERSION}
         if executing != {k: run["versions"].get(k) for k in executing}:
             log.warning("worker code versions differ from those recorded at queue time; recording the executed ones",
                         queued=run["versions"], executing=executing)

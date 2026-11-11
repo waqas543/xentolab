@@ -21,6 +21,7 @@ from ...errors import PermanentError, ValidationError
 from ...lake.reader import dataset_files, duck, parquet_source
 from ...lake.writer import DatasetVersionWriter, copy_query_into
 from ...normalize import NORMALIZER_VERSION
+from ...silver_contract import CONTRACT_VERSION
 from ...quality.checks import RecordCountCheck, SchemaCheck, UniqueCheck
 from ..base import DataSourceAdapter, DiscoveredDataset, PipelineSpec, SourceCapabilities, StageResult
 from ..common import (
@@ -101,7 +102,7 @@ class GeoNamesAdapter(DataSourceAdapter):
     capabilities = SourceCapabilities(supports_download=True, supports_release_detection=True,
                                       provides_places=True, provides_geography=True)
     parser_version = "geonames-bronze-1"
-    transformation_version = f"geonames-silver-1+{NORMALIZER_VERSION}"
+    transformation_version = f"geonames-silver-2+{NORMALIZER_VERSION}+{CONTRACT_VERSION}"
 
     def pipelines(self) -> list[PipelineSpec]:
         return [PipelineSpec(

@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 
-from . import db, routes
+from . import db, insights, routes
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app = FastAPI(title="XentoLab API", lifespan=lifespan, docs_url="/docs" if docs 
               openapi_url="/openapi.json" if docs else None)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.include_router(routes.router)
+app.include_router(insights.router)
 
 
 @app.get("/api/health")

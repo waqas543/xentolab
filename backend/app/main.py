@@ -8,6 +8,7 @@ from app import db
 from app.routers import companies, query_runner, stats
 from data_platform.api import routes_dashboard, routes_data, routes_pipelines
 from xento_api import db as app_db
+from xento_api import insights as app_insights
 from xento_api import routes as app_routes
 
 
@@ -38,6 +39,7 @@ app.include_router(routes_pipelines.router)
 app.include_router(routes_data.router)
 app.include_router(routes_dashboard.router)
 app.include_router(app_routes.router)        # mobile app, reads the `app` schema (make app-schema)
+app.include_router(app_insights.router)
 
 
 @app.get("/api/health")

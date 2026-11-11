@@ -110,3 +110,49 @@ def test_private_suffixes_make_hosted_sites_their_own_domain():
     assert normalize_website("https://kababjees.myshopify.com/")[1:] == ("kababjees.myshopify.com", "com", False)
     assert registered_domain("shop.example.blogspot.com")[0] == "example.blogspot.com"
     assert registered_domain("www.systems-ltd.com") == ("systems-ltd.com", "com")
+
+
+# ---------------------------------------------------------------- display names, chains, contacts (norm-v3)
+
+from data_platform.normalize import (  # noqa: E402
+    chain_name,
+    clean_name,
+    is_hotline,
+    normalize_postal_code,
+    parse_google_hours,
+)
+
+
+def test_clean_name_removes_advert_stuffing_phones_and_capitals():
+    assert clean_name("Ressichem Pvt Ltd | Epoxy | Plaster | Tile Bond") == ("Ressichem Pvt Ltd", None)
+    assert clean_name("Army Dog Center Mianwali 03005271252")[0] == "Army Dog Center Mianwali"
+    assert clean_name("AL- MUSTAFA TOURS & TRAVELS")[0] == "Al- Mustafa Tours & Travels"
+    assert clean_name("MCB BANK LIMITED")[0] == "MCB Bank Limited"           # short words stay acronyms
+    assert clean_name("Hotel One") == ("Hotel One", None)                    # ordinary names untouched
+
+
+def test_clean_name_splits_local_script_and_prefers_latin_brand():
+    assert clean_name("Sakhawat Kabab House سخاوت کباب ہاؤس") == ("Sakhawat Kabab House", "سخاوت کباب ہاؤس")
+    assert clean_name("شیل", brand="Shell") == ("Shell", "شیل")
+    assert clean_name("شیل") == ("شیل", None)
+
+
+def test_chain_name_drops_the_branch_label_and_town():
+    assert chain_name("Meezan Bank - Gulberg Branch") == "Meezan Bank"
+    assert chain_name("The Educators: Jinnah Campus") == "The Educators"
+    assert chain_name("UBL Signature Branch Sukkur", ("Sukkur",)) == "UBL"
+    assert chain_name("The Smart School Nasir Bagh Campus Peshawar", ("Peshawar",)) == "The Smart School"
+    assert chain_name("Bank Alfalah Islamic Banking Branch") == "Bank Alfalah"
+    assert chain_name("Post Office") == "Post Office"
+
+
+def test_hotlines_postal_codes_and_hours():
+    assert is_hotline("+9221111331331", "PK") and is_hotline("+92800030005", "PK")
+    assert not is_hotline("+923001234567", "PK")
+    assert normalize_postal_code("54000", "PK") == "54000" and normalize_postal_code("5400", "PK") is None
+    assert parse_google_hours("Open 24 hours") == "24/7"
+    assert parse_google_hours("Open · Closes 10 PM") is None                 # a snapshot, not a schedule
+    week = "; ".join(f"{d}: 9 AM to 5:30 PM" for d in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                                                         "Saturday")) + "; Sunday: Closed"
+    assert parse_google_hours(week) == ("Mo 09:00-17:30; Tu 09:00-17:30; We 09:00-17:30; Th 09:00-17:30; "
+                                        "Fr 09:00-17:30; Sa 09:00-17:30; Su off")

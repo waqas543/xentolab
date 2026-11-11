@@ -240,7 +240,8 @@ def test_gold_organizations(runs):
         systems["sources"] == ["gdelt", "opencorporates", "osm", "wikidata"]
     assert (systems["legal_name"], systems["registry_id"], systems["registry_status"]) == \
         ("SYSTEMS LIMITED", "pk/1234", "Active")
-    assert systems["industry"] == "software industry" and systems["news_mentions"] == 2
+    # Its one location is only a "company office", so the stated industry decides, on the shared category list.
+    assert systems["industry"] == "IT & software" and systems["news_mentions"] == 2
     assert systems["field_sources"]["registry"] == "opencorporates"
     bank = orgs["Habib Bank Limited"]
     assert (bank["location_count"], bank["wikidata_id"], bank["registry_id"]) == (2, "Q1", "pk/5678")

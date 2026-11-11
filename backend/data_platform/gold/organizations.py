@@ -3,8 +3,13 @@ knowledge bases state, plus news signals.
 
 An organization key comes from, in order: the brand's Wikidata id; a linked organization record
 (Wikidata / registry, via entity resolution); the brand name; a website domain shared by 2+
-locations. Organization records that link to no location still become organizations
-(location_count = 0): knowledge-base and registry discovery.
+locations. Organization records that link to no location become organizations (location_count = 0)
+only when they say something about a company (website, industry, employees, registry, news): Wikidata's
+34,000 government primary schools are matching references, not companies.
+
+A chain is named after what its branches share ("The Smart School", not one campus's "The Smart School Nasir
+Bagh Campus Peshawar"), or after the Wikidata item its branches' brand tag points to. Organizations that are the
+same brand under two keys (Shell plc's item on some stations, a brand name on others) are merged.
 """
 
 from __future__ import annotations
@@ -12,9 +17,14 @@ from __future__ import annotations
 import pyarrow as pa
 
 from .. import db
+from ..categories import CATEGORIES, classify_label
+from ..normalize import chain_name, name_key
 
 ORG_SOURCES = ("wikidata", "opencorporates")
 LINK_STRENGTH = {"wikidata_id": 1, "domain": 2, "name_geo": 3, "name": 4}
+GENERIC_CATEGORY_KEYS = "(" + ", ".join(f"'{c.key}'" for c in CATEGORIES.values() if c.generic) + ")"
+MIN_CHAIN_LOCATIONS = 3          # from here on, a chain is named after its branches rather than one linked record
+MERGE_MIN_LOCATIONS = 3          # same-brand keys merge when each has this many locations (one needs a Wikidata id)
 
 
 class UnionFind:
@@ -100,8 +110,24 @@ def cluster_records(con, links: list[dict]) -> dict:
             "place_links": len(place_links)}
 
 
+def register_functions(con) -> None:
+    """Python helpers this module's SQL calls (Gold registers them too; registering twice is harmless)."""
+    def industry_label(text):
+        category = classify_label(text) if text else None
+        return category.label if category else None
+
+    for name, function, params in (("name_key", name_key, ["VARCHAR"]),
+                                   ("chain_name", lambda n, c, l: chain_name(n, (c, l)), ["VARCHAR"] * 3),
+                                   ("industry_label", industry_label, ["VARCHAR"])):
+        try:
+            con.create_function(name, function, params, "VARCHAR", null_handling="special")
+        except Exception:
+            pass
+
+
 def assign_business_organizations(con) -> None:
     """Set businesses.organization_id (and wikidata_id for locations that are Wikidata items themselves)."""
+    register_functions(con)
     con.execute("""
         CREATE TEMP TABLE business_links AS
         SELECT gold_id, best.k AS org_key, best.m AS method FROM (
@@ -153,9 +179,11 @@ def assign_business_organizations(con) -> None:
         FROM first_keys k LEFT JOIN domain_owner o USING (domain) LEFT JOIN agreeing a USING (gold_id)
         LEFT JOIN domain_use d ON d.domain = k.domain
     """)
+    merge_duplicate_keys(con)
     con.execute("""
-        UPDATE businesses SET organization_id = 'org_' || substr(sha256(k.org_key), 1, 16)
-        FROM org_keys k WHERE k.gold_id = businesses.gold_id AND k.org_key IS NOT NULL
+        UPDATE businesses SET organization_id = 'org_' || substr(sha256(coalesce(r.canonical_key, k.org_key)), 1, 16)
+        FROM org_keys k LEFT JOIN org_key_remap r USING (org_key)
+        WHERE k.gold_id = businesses.gold_id AND k.org_key IS NOT NULL
     """)
     # A location linked to a Wikidata item by name and position *is* that item (e.g. a school).
     con.execute("""
@@ -163,6 +191,65 @@ def assign_business_organizations(con) -> None:
         FROM org_keys k
         WHERE k.gold_id = businesses.gold_id AND k.link_method IN ('name_geo', 'name')
           AND k.linked_key LIKE 'wikidata:%'
+    """)
+
+
+def record_display_names(con) -> None:
+    """Registers `record_display` (wikidata, name): each Wikidata record's name, shortened to a sibling record's.
+
+    Providers tag branches with a subsidiary's item ("Standard Chartered Taiwan" on Pakistani branches). When another
+    record with the same website is a prefix of the name ("Standard Chartered", sc.com), that shorter name is the
+    brand's.
+    """
+    has_records = con.execute("SELECT count(*) FROM duckdb_views() WHERE view_name = 'orgrec'").fetchone()[0] \
+        or con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'orgrec'").fetchone()[0]
+    if not has_records:
+        con.execute("CREATE OR REPLACE TEMP TABLE record_display (wikidata VARCHAR, name VARCHAR)")
+        return
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE record_display AS
+        WITH r AS (
+            SELECT wikidata, any_value(name) AS name, any_value(normalized_domain) AS domain FROM orgrec
+            WHERE wikidata IS NOT NULL AND name IS NOT NULL AND source = 'wikidata' GROUP BY wikidata
+        )
+        SELECT a.wikidata,
+               coalesce(arg_max(b.name, length(b.name)) FILTER (
+                            WHERE b.wikidata <> a.wikidata AND length(b.name) >= 4
+                              AND starts_with(lower(a.name), lower(b.name) || ' ')), a.name) AS name
+        FROM r a LEFT JOIN r b ON b.domain = a.domain AND a.domain IS NOT NULL
+        GROUP BY a.wikidata, a.name
+    """)
+
+
+def merge_duplicate_keys(con) -> None:
+    """Registers `org_key_remap` (org_key -> canonical_key) for keys that are one brand.
+
+    Two keys are one brand when their names agree (a Wikidata key by its record's display name, any key by its
+    branches' common name), one of them is a Wikidata item, and each has at least MERGE_MIN_LOCATIONS locations.
+    The key with most locations survives.
+    """
+    record_display_names(con)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE org_key_remap AS
+        WITH labels AS (
+            SELECT k.org_key,
+                   name_key(coalesce(d.name,
+                                     chain_name(coalesce(CASE WHEN regexp_matches(b.brand_name, '[A-Za-z]')
+                                                              THEN b.brand_name END, b.name), b.city, b.locality)))
+                       AS label
+            FROM org_keys k JOIN businesses b USING (gold_id)
+            LEFT JOIN record_display d ON k.org_key = 'wikidata:' || d.wikidata
+            WHERE k.org_key IS NOT NULL
+        ),
+        per_key AS (
+            SELECT org_key, mode(label) AS label, count(*) AS n FROM labels WHERE label IS NOT NULL GROUP BY org_key
+        ),
+        groups AS (
+            SELECT label, list(org_key ORDER BY n DESC, org_key) AS keys, bool_or(org_key LIKE 'wikidata:%') AS has_qid
+            FROM per_key WHERE n >= {MERGE_MIN_LOCATIONS} AND length(label) >= 3 GROUP BY label
+            HAVING count(*) > 1
+        )
+        SELECT unnest(keys[2:]) AS org_key, keys[1] AS canonical_key FROM groups WHERE has_qid
     """)
 
 
@@ -181,33 +268,58 @@ def build_organizations(con, country: str) -> None:
         existing AS (SELECT DISTINCT organization_id FROM businesses WHERE organization_id IS NOT NULL)
         SELECT DISTINCT c.anchor, c.org_key,
                CASE WHEN c.org_key LIKE 'org:%' AND e.organization_id IS NOT NULL THEN e.organization_id
-                    ELSE 'org_' || substr(sha256(c.org_key), 1, 16) END AS organization_id
+                    ELSE 'org_' || substr(sha256(coalesce(r.canonical_key, c.org_key)), 1, 16) END AS organization_id
         FROM org_cluster c LEFT JOIN searched s USING (anchor)
         LEFT JOIN existing e ON e.organization_id = s.origin_org
+        LEFT JOIN org_key_remap r ON r.org_key = c.org_key
     """)
     con.execute("""
         CREATE TEMP TABLE organization_members AS
         SELECT i.organization_id, c.link_method, r.*
         FROM orgrec r JOIN org_cluster c USING (silver_id) JOIN cluster_ids i USING (anchor)
     """)
+    # What the branches have in common: the brand tag, else the branch name without its branch label and town.
     con.execute("""
-        CREATE TEMP TABLE from_locations AS
-        SELECT organization_id,
+        CREATE TEMP TABLE org_labels AS
+        SELECT organization_id, label, count(*) AS n,
                -- Prefer a Latin-script spelling (brands are often tagged in several scripts).
-               arg_max(coalesce(brand_name, name),
-                       regexp_matches(coalesce(brand_name, name), '^[\\x20-\\x7E]+$')::INT * 1000 + completeness) AS name,
-               any_value(brand_wikidata) AS brand_wikidata, mode(domain) AS domain,
+               regexp_matches(label, '^[\\x20-\\x7E]+$')::INT AS latin
+        FROM (SELECT organization_id, chain_name(coalesce(brand_name, name), city, locality) AS label
+              FROM businesses WHERE organization_id IS NOT NULL)
+        WHERE label IS NOT NULL GROUP BY ALL
+    """)
+    con.execute(f"""
+        CREATE TEMP TABLE from_locations AS
+        SELECT organization_id, any_value(o.name) AS name, any_value(o.any_label) AS any_label,
+               mode(trim(split_part(brand_wikidata, ';', 1))) AS brand_wikidata, mode(domain) AS domain,
+               -- The industry its locations show, unless that is only a catch-all ("Company office").
+               mode(category_label) FILTER (WHERE category NOT IN {GENERIC_CATEGORY_KEYS}) AS top_category_label,
                mode(category_group) AS category_group, count(*)::INTEGER AS location_count,
-               count(DISTINCT city)::INTEGER AS city_count,
+               count(DISTINCT coalesce(city_id, city))::INTEGER AS city_count,
                list_sort(list_distinct(flatten(list(sources)))) AS location_sources,
                list(DISTINCT brand_name) FILTER (WHERE brand_name IS NOT NULL) AS brand_names
-        FROM businesses WHERE organization_id IS NOT NULL GROUP BY organization_id
+        FROM businesses b
+        -- A branch name names the chain only when branches share it: 91 Standard Chartered booths each named
+        -- after the office they sit in ("Siemens, KHI") must not make the bank "Siemens".
+        LEFT JOIN (SELECT organization_id,
+                          arg_max(label, latin * 1000000000 + n) FILTER (WHERE n >= 2) AS name,
+                          arg_max(label, latin * 1000000000 + n) AS any_label
+                   FROM org_labels GROUP BY organization_id) o USING (organization_id)
+        WHERE organization_id IS NOT NULL GROUP BY organization_id
     """)
-    con.execute("""
+    # Names of the records themselves, so a chain whose branches carry a brand Wikidata id takes that item's name
+    # (not the name of another item merged into the cluster, e.g. a foreign subsidiary sharing the website).
+    con.execute(f"""
+        CREATE TEMP TABLE record_names AS
+        SELECT m.wikidata, coalesce(any_value(d.name), arg_max(m.name, coalesce(m.country_code = '{country}', false)::INT)) AS name
+        FROM organization_members m LEFT JOIN record_display d USING (wikidata)
+        WHERE m.wikidata IS NOT NULL AND m.source = 'wikidata' GROUP BY m.wikidata
+    """)
+    con.execute(f"""
         CREATE TEMP TABLE from_records AS
         SELECT organization_id,
-               arg_max(name, (source = 'wikidata')::INT * 10 + coalesce(employees, 0) / 1e9)
-                   FILTER (WHERE source = 'wikidata') AS wikidata_name,
+               arg_max(name, coalesce(country_code = '{country}', false)::INT * 100 + (source = 'wikidata')::INT * 10
+                             + coalesce(employees, 0) / 1e12) FILTER (WHERE source = 'wikidata') AS wikidata_name,
                arg_max(name, coalesce(source_confidence, 1)) AS any_name,
                arg_max(legal_name, (source = 'opencorporates')::INT * 10 + coalesce(source_confidence, 1))
                    FILTER (WHERE legal_name IS NOT NULL) AS legal_name,
@@ -257,7 +369,9 @@ def build_organizations(con, country: str) -> None:
     con.execute(f"""
         CREATE TEMP TABLE organizations AS
         SELECT organization_id, '{country}' AS country_code,
-               coalesce(r.wikidata_name, l.name, r.any_name) AS name,
+               coalesce(CASE WHEN NOT regexp_matches(lower(q.name), '\\b(branch|campus)\\b') THEN q.name END,
+                        CASE WHEN l.location_count >= {MIN_CHAIN_LOCATIONS} THEN l.name END,
+                        r.wikidata_name, l.name, r.any_name, l.any_label) AS name,
                r.legal_name, coalesce(l.brand_wikidata, r.wikidata_id) AS brand_wikidata, r.wikidata_id,
                coalesce(l.domain, r.domain) AS domain, r.website,
                coalesce(l.category_group, r.category_group) AS category_group,
@@ -266,7 +380,12 @@ def build_organizations(con, country: str) -> None:
                                        || coalesce(r.record_sources, []::VARCHAR[])
                                        || CASE WHEN n.news_mentions > 0 THEN ['gdelt'] ELSE []::VARCHAR[] END))
                    AS sources,
-               r.description, array_to_string(r.industries[1:3], ', ') AS industry, r.headquarters, r.inception,
+               r.description,
+               -- One vocabulary for every organization: what its locations are, else its stated industry mapped
+               -- onto the same category list ("Petroleum industry" -> Energy & utilities).
+               coalesce(l.top_category_label, industry_label(r.industries[1]), nullif(trim(r.industries[1]), ''))
+                   AS industry,
+               r.headquarters, r.inception,
                r.employees, r.parent_name, r.registry_id, r.jurisdiction, r.registry_status,
                coalesce(r.identifiers, '{{}}') AS identifiers, r.aliases,
                coalesce(r.records, 0) AS linked_records,
@@ -284,7 +403,15 @@ def build_organizations(con, country: str) -> None:
                            'news', CASE WHEN n.news_mentions > 0 THEN 'gdelt' END)::VARCHAR AS field_sources
         FROM from_locations l FULL OUTER JOIN from_records r USING (organization_id)
         LEFT JOIN org_news n USING (organization_id)
-        WHERE coalesce(r.wikidata_name, l.name, r.any_name) IS NOT NULL
+        LEFT JOIN record_names q ON q.wikidata = l.brand_wikidata
+        WHERE coalesce(r.wikidata_name, l.name, r.any_name, l.any_label) IS NOT NULL
+          -- A school or public body that no location links to is a matching reference, not a company, unless
+          -- the record says something about it as an organization (website, staff, registry, news, industry).
+          AND (coalesce(l.location_count, 0) > 0
+               OR coalesce(r.category_group, '') NOT IN ('Education', 'Public & Non-profit')
+               OR r.website IS NOT NULL OR r.domain IS NOT NULL OR r.employees IS NOT NULL
+               OR r.registry_id IS NOT NULL OR coalesce(n.news_mentions, 0) > 0
+               OR len(list_filter(r.industries, x -> nullif(trim(x), '') IS NOT NULL)) > 0)
     """)
     # Which non-location sources describe each business (through its organization or its domain).
     con.execute("""

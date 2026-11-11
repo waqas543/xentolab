@@ -3,9 +3,10 @@ import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { CompanyRow } from '../components/rows';
+import { StatTiles } from '../components/insights';
 import { Card, ErrorView, GroupIcon, Loading, Section } from '../components/ui';
 import { get, type Home } from '../lib/api';
-import { compact, places } from '../lib/format';
+import { compact, pct, places, stars } from '../lib/format';
 import { Ionicons, type IconName } from '../lib/icons';
 import { radius, space, useColors } from '../lib/theme';
 import { useNav } from '../navigation/types';
@@ -26,7 +27,7 @@ export function HomeScreen() {
           <Image source={require('../assets/logo.png')} style={styles.logo} accessibilityIgnoresInvertColors />
           <View>
             <Text style={[styles.brand, { color: c.text }]}>XentoLab</Text>
-            <Text style={[styles.hello, { color: c.muted }]}>Find businesses across Pakistan</Text>
+            <Text style={[styles.hello, { color: c.muted }]}>Find businesses. Understand markets.</Text>
           </View>
         </View>
 
@@ -58,6 +59,42 @@ export function HomeScreen() {
             <Stat value={compact(home.data.totals.companies)} label="Companies" onPress={() => nav.push('Companies')} />
             <Stat value={compact(home.data.totals.cities)} label="Cities & towns" onPress={() => nav.push('Cities')} />
           </View>
+
+          {home.data.insights ? (
+            <Section title="Market insights">
+              <Text style={[styles.lead, { color: c.muted }]}>
+                Who leads each market, where it's crowded, where there's room to grow.
+              </Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hList}>
+                {home.data.insights.markets.map((m) => (
+                  <Pressable
+                    key={m.key}
+                    onPress={() => nav.push('Market', { key: m.key })}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${m.label} market, ${m.places} places`}
+                    style={({ pressed }) => [styles.marketCard, { backgroundColor: c.card, borderColor: c.border, opacity: pressed ? 0.7 : 1 }]}>
+                    <GroupIcon group={m.group} size={34} />
+                    <Text style={[styles.cityName, { color: c.text }]} numberOfLines={2}>{m.label}</Text>
+                    <Text style={[styles.tileCount, { color: c.muted }]}>{places(m.places)}</Text>
+                    <View style={styles.marketLink}>
+                      <Ionicons name="analytics" size={14} color={c.primary} />
+                      <Text style={[styles.marketLinkText, { color: c.primary }]}>Insights</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </Section>
+          ) : null}
+
+          {home.data.insights ? (
+            <Section title="At a glance">
+              <StatTiles items={[
+                { value: pct(home.data.insights.with_website_pct), label: 'have their own website' },
+                { value: stars(home.data.insights.avg_rating), label: `avg rating (${compact(home.data.insights.rated)} rated)` },
+                { value: compact(home.data.insights.open_24h), label: 'open 24 hours', onPress: () => nav.push('Places', { open_24h: true, title: 'Open 24 hours' }) },
+              ]} />
+            </Section>
+          ) : null}
 
           <Section title="Browse by category">
             <View style={[styles.pad, styles.grid]}>
@@ -103,12 +140,12 @@ export function HomeScreen() {
             <Card style={styles.marginH}>
               <ExploreRow icon="business-outline" title="Companies & brands" text={`${compact(home.data.totals.companies)} organisations`} onPress={() => nav.push('Companies')} />
               <ExploreRow icon="map-outline" title="Cities & towns" text={`${places(home.data.totals.cities)} with businesses`} onPress={() => nav.push('Cities')} />
-              <ExploreRow icon="globe-outline" title="Websites" text={`${compact(home.data.totals.websites)} Pakistani websites`} onPress={() => nav.push('Websites')} />
+              <ExploreRow icon="globe-outline" title="Websites" text={`${compact(home.data.totals.websites)} business websites`} onPress={() => nav.push('Websites')} />
               <ExploreRow icon="call-outline" title="Places with a phone number" text={`${compact(home.data.totals.with_phone)} you can call`} onPress={() => nav.push('Places', { has_phone: true, title: 'Places you can call' })} last />
             </Card>
           </Section>
 
-          <Section title="By province">
+          <Section title="By region">
             <Card style={styles.marginH}>
               {home.data.provinces.map((p, i, all) => (
                 <ExploreRow
@@ -176,6 +213,10 @@ const styles = StyleSheet.create({
   tileTitle: { fontSize: 14, fontWeight: '600', lineHeight: 18 },
   tileCount: { fontSize: 13 },
   hList: { gap: space.sm, paddingHorizontal: space.lg },
+  lead: { fontSize: 14, paddingHorizontal: space.lg, marginBottom: space.sm, marginTop: -2 },
+  marketCard: { width: 148, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: space.md, gap: 4 },
+  marketLink: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  marketLinkText: { fontSize: 13, fontWeight: '700' },
   cityCard: { width: 128, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: space.md, gap: 4 },
   cityName: { fontSize: 16, fontWeight: '700' },
   exploreRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md, minHeight: 60 },

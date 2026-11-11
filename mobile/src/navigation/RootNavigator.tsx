@@ -7,6 +7,7 @@ import { CitiesScreen, CompaniesScreen, PlacesScreen, WebsitesScreen } from '../
 import { CityScreen } from '../screens/CityScreen';
 import { CompanyScreen } from '../screens/CompanyScreen';
 import { HomeScreen } from '../screens/HomeScreen';
+import { MarketScreen } from '../screens/MarketScreen';
 import { NearbyScreen } from '../screens/NearbyScreen';
 import { PlaceScreen } from '../screens/PlaceScreen';
 import { SavedScreen } from '../screens/SavedScreen';
@@ -64,6 +65,7 @@ export function RootNavigator() {
       <Stack.Screen name="City" component={CityScreen} />
       <Stack.Screen name="Website" component={WebsiteScreen} options={{ title: 'Website' }} />
       <Stack.Screen name="Places" component={PlacesScreen} />
+      <Stack.Screen name="Market" component={MarketScreen} options={{ title: 'Market' }} />
       <Stack.Screen name="Companies" component={CompaniesScreen} options={{ title: 'Companies & brands' }} />
       <Stack.Screen name="Cities" component={CitiesScreen} options={{ title: 'Cities & towns' }} />
       <Stack.Screen name="Websites" component={WebsitesScreen} options={{ title: 'Websites' }} />

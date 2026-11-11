@@ -146,6 +146,8 @@ def transform(ctx: StageContext, artifact: dict, bronze: dict[str, dict], transf
             "city": assigned["city"][index] if assigned else None,
             "locality": assigned["locality"][index] if assigned else None,
             "locality_distance_km": assigned["locality_distance_km"][index] if assigned else None,
+            "city_id": assigned["city_id"][index] if assigned else None,
+            "location_precision": "exact",
             "latitude": lat, "longitude": lon,
             # GeoNames facilities often date from old gazetteers: kept, but below OSM in survivorship and
             # with a modest confidence so an unconfirmed one alone is still promoted (>= the Gold floor).

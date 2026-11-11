@@ -78,7 +78,8 @@ def test_explorer_query_with_filters_sort_and_columns(client, completed_run):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["columns"] == ["gold_id", "name", "domain"]
-    assert [r[1] for r in body["rows"]] == ["Systems (Pvt.) Limited", "Khaadi", "Cafe Aylanto"]
+    # Khaadi lists only a Facebook page: a social page, not a website (gold-v9).
+    assert [r[1] for r in body["rows"]] == ["Systems (Pvt.) Limited", "Cafe Aylanto"]
 
 
 def test_explorer_on_parquet_layers(client, completed_run):

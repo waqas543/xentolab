@@ -293,6 +293,8 @@ def normalize_batch(batch: pa.RecordBatch, *, geo: GeoIndex, scope_country: str,
             "city": geo_values["city"][index],
             "locality": geo_values["locality"][index],
             "locality_distance_km": geo_values["locality_distance_km"][index],
+            "city_id": geo_values["city_id"][index],
+            "location_precision": "exact",          # mapped by hand: OSM positions are the real ones
             "postal_code": first_value(tags.get("addr:postcode")),
             "street": first_value(tags.get("addr:street")),
             "housenumber": first_value(tags.get("addr:housenumber")),

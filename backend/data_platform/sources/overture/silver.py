@@ -5,6 +5,9 @@ shared geography (silver.geo_boundaries / silver.geo_places, from any source) ar
 applied in bounded batches. Non-business places (worship, parks, transport hubs,
 natural features) are dropped by the shared taxonomy; permanently closed places and
 unusable coordinates go to silver.rejects.
+
+Overture geocodes listings it cannot place to a town or city centre, stacking hundreds of unrelated places on
+one point. Those are flagged approximate and take the town from their own address.
 """
 
 from __future__ import annotations
@@ -25,7 +28,15 @@ from ...normalize import (
     normalize_website,
     valid_coordinates,
 )
-from ...silver_contract import PLACES_SCHEMA, REJECTS_SCHEMA, empty_columns, load_geo_index
+from ...silver_contract import (
+    PLACES_SCHEMA,
+    REJECTS_SCHEMA,
+    empty_columns,
+    load_geo_index,
+    location_precision,
+    place_geography,
+    stacked_points_sql,
+)
 from ...taxonomy import classify_overture
 
 BATCH_ROWS = 50_000
@@ -122,6 +133,11 @@ def normalize_batch(rows: list[dict], *, geo, scope_country: str, context: dict)
         url, domain, tld, is_platform = normalize_website(first_value(";".join(row["websites"] or [])))
         raw_phone = (row["phones"] or [None])[0]
         local = _clean(row["name_primary"]) if _clean(row["name_primary"]) != name else _clean(row["name_ur"])
+        precision = location_precision(row.get("stack_size"),
+                                       geo_values["locality_distance_km"][index] if geo_values else None)
+        geography = place_geography(geo, geo_values, index, precision=precision,
+                                    stated_city=_clean(address.get("locality")),
+                                    stated_admin1=_clean(address.get("region")))
         street = _clean(address.get("freeform"))
         address_text = ", ".join(p for p in [street, _clean(address.get("locality")), _clean(address.get("postcode"))] if p)
         values = {
@@ -144,11 +160,13 @@ def normalize_batch(rows: list[dict], *, geo, scope_country: str, context: dict)
             "operator": None,
             "wikidata": None,
             "country_code": country_code.upper() if country_code else None,
-            "admin1": geo_values["admin1"][index] if geo_values else _clean(address.get("region")),
-            "admin2": geo_values["admin2"][index] if geo_values else None,
-            "city": (geo_values["city"][index] if geo_values else None) or _clean(address.get("locality")),
-            "locality": (geo_values["locality"][index] if geo_values else None) or _clean(address.get("locality")),
-            "locality_distance_km": geo_values["locality_distance_km"][index] if geo_values else None,
+            "admin1": geography["admin1"],
+            "admin2": geography["admin2"],
+            "city": geography["city"] or (_clean(address.get("locality")) if precision == "exact" else None),
+            "city_id": geography["city_id"],
+            "locality": geography["locality"] or (_clean(address.get("locality")) if precision == "exact" else None),
+            "locality_distance_km": geography["locality_distance_km"],
+            "location_precision": precision,
             "postal_code": _clean(address.get("postcode")),
             "street": street,
             "housenumber": None,
@@ -197,7 +215,7 @@ def transform(ctx: StageContext, artifact: dict, bronze_version: dict, scope_cou
         source = parquet_source(version_files(bronze_version))
         columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
         # Materialize first: streaming complex results through the Arrow reader can stall in DuckDB 1.5.x.
-        con.execute(f"CREATE TEMP TABLE flat AS {flatten_sql(columns, source)}")
+        con.execute(f"CREATE TEMP TABLE flat AS {stacked_points_sql(f'({flatten_sql(columns, source)})')}")
         total = con.execute("SELECT count(*) FROM flat").fetchone()[0]
         reader = con.execute("SELECT * FROM flat").to_arrow_reader(BATCH_ROWS)
         with DatasetVersionWriter(ctx.storage, "silver.places", partition, PLACES_SCHEMA, run_id=ctx.run_id,

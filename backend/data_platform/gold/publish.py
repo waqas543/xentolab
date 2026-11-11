@@ -21,7 +21,9 @@ SERVING_TABLES = {
         "phone", "email", "brand_name", "brand_wikidata", "organization_id", "sources", "source_count",
         "member_count", "has_website", "has_phone", "has_email", "has_address", "completeness", "conflicts",
         "source_updated_at", "built_at", "field_sources", "source_confidence", "wikidata_id", "enriched_by",
-        "rating", "review_count"]),
+        "rating", "review_count", "category_label", "subcategory", "original_name", "name_local", "generic_name",
+        "city_id", "location_precision", "social_url", "website_kind", "phone_kind", "email_shared",
+        "opening_hours"]),
     "gold.business_sources": ("gold.business_sources", [
         "gold_id", "silver_id", "country_code", "source", "source_record_id", "artifact_id", "silver_version_id",
         "pipeline_run_id", "transformation_version", "match_confidence", "is_primary"]),

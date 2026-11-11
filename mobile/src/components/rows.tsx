@@ -1,17 +1,25 @@
 import type { City, Company, Place, Website } from '../lib/api';
-import { distance, hostname, placeLine, plural, places } from '../lib/format';
+import { compact, distance, hostname, placeLine, plural, places, stars } from '../lib/format';
+import { hoursStatus } from '../lib/hours';
 import { useNav } from '../navigation/types';
 import { GroupIcon, IconCircle, Row } from './ui';
 
 export function PlaceRow({ place, last }: { place: Place; last?: boolean }) {
   const nav = useNav();
-  const contact = [place.phone && 'Phone', place.website && 'Website'].filter(Boolean).join(' · ');
+  const contact = [place.phone && 'phone', place.website && 'website'].filter(Boolean).join(' & ');
+  const status = hoursStatus(place.opening_hours);
+  // What helps decide at a glance: is it good, is it open, can I reach it.
+  const detail = [
+    place.rating ? `★ ${stars(place.rating)}${place.review_count ? ` (${compact(place.review_count)})` : ''}` : null,
+    status ? (status.always ? 'Open 24h' : status.open ? 'Open now' : 'Closed now') : null,
+    contact ? `Has ${contact}` : null,
+  ].filter(Boolean).join(' · ');
   return (
     <Row
       icon={<GroupIcon group={place.group} />}
       title={place.name}
       subtitle={[place.category, placeLine(place)].filter(Boolean).join(' · ')}
-      detail={contact ? `Has ${contact.toLowerCase()}` : null}
+      detail={detail || null}
       trailing={distance(place.distance_km)}
       onPress={() => nav.push('Place', { id: place.id })}
       last={last}

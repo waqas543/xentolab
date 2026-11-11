@@ -36,8 +36,8 @@ COMMON_PARAMETERS: dict[str, dict] = {
                     "description": "Skip earlier stages and rebuild from existing data."},
     "artifact_id": {"type": ["integer", "null"], "default": None, "title": "Artifact ID (backfill)",
                     "description": "Rebuild from this stored artifact instead of discovering a new one."},
-    "er_algorithm": {"type": "string", "default": "v1", "title": "Entity resolution algorithm",
-                     "enum": ["v1"]},
+    "er_algorithm": {"type": "string", "default": "v2", "title": "Entity resolution algorithm",
+                     "enum": ["v1", "v2"]},
 }
 
 SECRET_PARAMETER_NAMES = ("password", "secret", "token", "api_key", "apikey", "credential")

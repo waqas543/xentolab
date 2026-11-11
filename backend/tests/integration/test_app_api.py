@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from xento_api import db as app_db
-from xento_api import routes
+from xento_api import insights, routes
 
 APP_SCHEMA_SQL = Path(__file__).resolve().parents[3] / "scripts" / "app_schema.sql"
 
@@ -69,6 +69,11 @@ def client(clean_platform):
                    ('geonames:1174872', 'PK', 'Karachi', 'city', 'Sindh', 24.86, 67.01, 11600000, 1, 0, 1, 0,
                     'geonames', 1)
         """)
+        # Businesses point at their city by gazetteer id (gold-v9); the delivery places are exactly located.
+        conn.execute("""
+            UPDATE gold.businesses b SET city_id = c.city_id, location_precision = 'exact'
+            FROM gold.cities c WHERE c.name = b.city AND b.gold_id LIKE 'gb_%'
+        """)
         conn.execute("""
             INSERT INTO gold.domains (domain, country_code, tld, business_count, organization_count, sources,
                 gold_version_id, organization_id, domain_type, crawl_pages, homepage_url, homepage_status, crawl)
@@ -90,6 +95,7 @@ def client(clean_platform):
         conn.execute(APP_SCHEMA_SQL.read_text())
     app = FastAPI()
     app.include_router(routes.router)
+    app.include_router(insights.router)
     yield TestClient(app)
     app_db.close()
 
@@ -117,7 +123,8 @@ def test_every_endpoint_hides_sources(client):
     urls = ["/api/app/home", "/api/app/businesses", "/api/app/businesses?q=alpha",
             "/api/app/businesses?lat=31.52&lng=74.35&radius_km=2", "/api/app/businesses/gb_1",
             "/api/app/organizations", "/api/app/organizations/org_1", "/api/app/cities", f"/api/app/cities/{lahore['id']}",
-            "/api/app/websites", "/api/app/websites/alpha.pk", "/api/app/categories", "/api/app/search?q=a"]
+            "/api/app/websites", "/api/app/websites/alpha.pk", "/api/app/categories", "/api/app/search?q=a",
+            "/api/app/insights/categories/pharmacy", f"/api/app/insights/categories/pharmacy?city_id={lahore['id']}"]
     for url in urls:
         response = client.get(url)
         assert response.status_code == 200, (url, response.text)
@@ -184,3 +191,31 @@ def test_search_groups_results(client):
     assert result["categories"][0]["label"] == "Pharmacy"
     assert result["businesses"][0]["name"] == "Alpha Pharmacy"
     assert result["organizations"][0]["name"] == "Alpha"
+
+
+def test_market_insights_compare_shares_not_counts(client):
+    cities = client.get("/api/app/cities").json()["items"]
+    lahore = next(c for c in cities if c["name"] == "Lahore")
+    market = client.get(f"/api/app/insights/categories/pharmacy?city_id={lahore['id']}").json()
+    assert market["category"] == {"key": "pharmacy", "label": "Pharmacy", "group": "Health"}
+    assert market["national"]["places"] == 1 and market["national"]["with_website_pct"] == 100.0
+    city = market["city"]
+    # Lahore: 1 of its 2 places is a pharmacy; nationally 1 of 4 -> twice the usual share.
+    assert (city["places"], city["share_of_all_pct"], city["index"], city["verdict"]) == (1, 50.0, 2.0, "much_more")
+    assert city["rank"] == 1 and city["areas"] == [{"name": "Gulberg", "count": 1}]
+    assert [b["name"] for b in market["brands"]] == ["Alpha"] and market["brands"][0]["share_pct"] == 100.0
+    assert market["top_rated"][0]["id"] == "gb_1"                                   # 310 reviews
+    assert client.get("/api/app/insights/categories/nope").status_code == 404
+
+
+def test_business_context_and_rating_sort(client):
+    detail = client.get("/api/app/businesses/gb_1").json()
+    assert detail["similar_nearby"] == {"radius_km": 1.0, "count": 0, "items": []}   # no other pharmacy close by
+    assert detail["rating_context"] is None                                         # nobody to compare with
+    rated = client.get("/api/app/businesses?sort=rating").json()
+    assert [b["id"] for b in rated["items"]] == ["gb_1"] and rated["items"][0]["rating_score"] > 0
+    assert client.get("/api/app/businesses?open_24h=true").json()["total"] == 0
+    home = client.get("/api/app/home").json()["insights"]
+    assert home["markets"][0]["key"] in {"pharmacy", "bakery", "unspecified_shop", "professional_service"}
+    small = client.get(f"/api/app/cities/{client.get('/api/app/cities').json()['items'][0]['id']}").json()
+    assert small["insights"] is None                                                # too few places to profile

@@ -7,10 +7,13 @@ export type PlacesFilters = {
   group?: string;
   category?: string;
   city?: string;
+  city_id?: string;
   area?: string;
   province?: string;
   organization?: string;
   has_phone?: boolean;
+  open_24h?: boolean;
+  sort?: 'best' | 'rating' | 'name';
 };
 
 export type TabParamList = {
@@ -27,6 +30,8 @@ export type RootStackParamList = {
   City: { id: string };
   Website: { domain: string };
   Places: PlacesFilters;
+  /** A category's market, nationally or in one city. */
+  Market: { key: string; city_id?: string };
   Companies: { q?: string } | undefined;
   Cities: undefined;
   Websites: { q?: string } | undefined;

@@ -44,7 +44,7 @@ class OvertureAdapter(DataSourceAdapter):
     capabilities = SourceCapabilities(supports_download=True, supports_incremental=False,
                                       supports_release_detection=True, provides_places=True)
     parser_version = "overture-bronze-1"
-    transformation_version = f"overture-silver-2+{NORMALIZER_VERSION}+{TAXONOMY_VERSION}+{CONTRACT_VERSION}"
+    transformation_version = f"overture-silver-3+{NORMALIZER_VERSION}+{TAXONOMY_VERSION}+{CONTRACT_VERSION}"
 
     # -- declaration -------------------------------------------------------------------
 

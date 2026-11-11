@@ -234,3 +234,30 @@ class DuplicateRateCheck(QualityCheck):
             FROM (SELECT count(*) AS n FROM {source} {scope} GROUP BY {cols})
         """).fetchone()
         return CheckOutcome(int(row[0]), int(row[1]), {"columns": list(self.columns)})
+
+
+@dataclass(frozen=True)
+class ExpressionCheck(QualityCheck):
+    """Fails rows matching a SQL predicate (trusted, platform-defined): a rule no generic check expresses."""
+    failing: str = "false"
+    description: str = ""
+    check_type = "expression"
+
+    def evaluate(self, con, source, context):
+        outcome = self._count(con, source, f"coalesce(({self.failing}), false)")
+        return replace(outcome, details={"failing": self.failing, "description": self.description})
+
+
+@dataclass(frozen=True)
+class BlankStringCheck(QualityCheck):
+    """Fails rows where any text column holds an empty or whitespace-only string: a value that looks like data."""
+    check_type = "blank_strings"
+
+    def evaluate(self, con, source, context):
+        columns = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()
+                   if r[1] == "VARCHAR"]
+        if not columns:
+            return CheckOutcome(0, 0)
+        predicate = " OR ".join(f"trim({_ident(c)}) = ''" for c in columns)
+        outcome = self._count(con, source, predicate)
+        return replace(outcome, details={"columns": columns})
